@@ -213,15 +213,7 @@ public class TencentCloudModerationService {
                 break;
         }
 
-        // 获取详细分数
-        Integer score = 0;
-        if (response.has("DetailResults") && response.get("DetailResults").isArray()
-            && response.get("DetailResults").size() > 0) {
-            JsonNode firstDetail = response.get("DetailResults").get(0);
-            if (firstDetail.has("Score")) {
-                score = firstDetail.get("Score").asInt();
-            }
-        }
+        Integer score = response.has("Score") ? response.get("Score").asInt() : maxDetailScore(response);
 
         // 提取关键词
         Set<String> keywords = new LinkedHashSet<>();
@@ -251,6 +243,18 @@ public class TencentCloudModerationService {
         result.setRawResponse(responseBody);
 
         return result;
+    }
+
+    private Integer maxDetailScore(JsonNode response) {
+        int maxScore = 0;
+        if (response.has("DetailResults") && response.get("DetailResults").isArray()) {
+            for (JsonNode detail : response.get("DetailResults")) {
+                if (detail.has("Score")) {
+                    maxScore = Math.max(maxScore, detail.get("Score").asInt());
+                }
+            }
+        }
+        return maxScore;
     }
 
     /**
@@ -283,5 +287,4 @@ public class TencentCloudModerationService {
         return sb.toString();
     }
 }
-
 

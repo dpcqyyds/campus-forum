@@ -8,6 +8,7 @@ import org.example.project.dto.FollowUserView;
 import org.example.project.dto.PostView;
 import org.example.project.dto.RolePermissionsView;
 import org.example.project.dto.AuditLogView;
+import org.example.project.dto.TencentImageModerationResult;
 import org.example.project.dto.TopicOptionView;
 import org.example.project.dto.TopicView;
 import org.example.project.dto.request.CreateBoardRequest;
@@ -99,6 +100,7 @@ public class ForumService {
     private final UserProfileMapper userProfileMapper;
     private final UserFollowMapper userFollowMapper;
     private final TencentCloudModerationService tencentModerationService;
+    private final TencentImageModerationService tencentImageModerationService;
     private final List<String> blockedWords;
     private final List<String> warningWords;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -120,7 +122,8 @@ public class ForumService {
             UserFollowMapper userFollowMapper,
             @Value("${app.moderation.blocked-words:}") String blockedWordsConfig,
             @Value("${app.moderation.warning-words:}") String warningWordsConfig,
-            @Autowired(required = false) TencentCloudModerationService tencentModerationService
+            @Autowired(required = false) TencentCloudModerationService tencentModerationService,
+            TencentImageModerationService tencentImageModerationService
     ) {
         this.userMapper = userMapper;
         this.authTokenMapper = authTokenMapper;
@@ -137,6 +140,7 @@ public class ForumService {
         this.userProfileMapper = userProfileMapper;
         this.userFollowMapper = userFollowMapper;
         this.tencentModerationService = tencentModerationService;
+        this.tencentImageModerationService = tencentImageModerationService;
         this.blockedWords = parseWordList(blockedWordsConfig, DEFAULT_BLOCKED_WORDS);
         this.warningWords = parseWordList(warningWordsConfig, DEFAULT_WARNING_WORDS);
     }
@@ -460,6 +464,7 @@ public class ForumService {
                     createStatus = "pending";
                 }
             }
+            enforceImageModeration(request.title(), attachments, createStatus);
         }
 
         BoardEntity board = getBoardOrThrow(request.boardId());
@@ -521,6 +526,7 @@ public class ForumService {
         }
         String effectiveFormat = format == null ? old.getFormat() : format;
         String effectiveContent = request.content() == null ? old.getContent() : request.content();
+        String effectiveStatus = status == null ? old.getStatus() : status;
         List<String> effectiveAttachments = request.attachments() == null
                 ? readJsonArray(old.getAttachmentsJson())
                 : normalizeStringList(request.attachments());
@@ -531,6 +537,9 @@ public class ForumService {
         boolean publishing = "pending".equals(status) || "published".equals(status);
         if (contentChanged || publishing) {
             validatePostPayload(effectiveFormat, effectiveContent, effectiveAttachments);
+        }
+        if ((contentChanged || publishing) && shouldModeratePostImages(effectiveStatus)) {
+            enforceImageModeration(firstNonBlank(request.title(), old.getTitle()), effectiveAttachments, effectiveStatus);
         }
         if (format != null) {
             validatePostFormat(format);
@@ -1340,6 +1349,40 @@ public class ForumService {
                 throw new ApiException("图片地址格式不合法");
             }
         }
+    }
+
+    private boolean shouldModeratePostImages(String status) {
+        return tencentImageModerationService != null
+                && tencentImageModerationService.isEnabled()
+                && ("pending".equals(status) || "published".equals(status));
+    }
+
+    private void enforceImageModeration(String title, List<String> attachments, String status) {
+        if (!shouldModeratePostImages(status) || attachments == null || attachments.isEmpty()) {
+            return;
+        }
+        String traceId = "post-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        log.info("帖子图片审核开始 - TraceId: {}, 标题: {}, 状态: {}, Count: {}",
+                traceId,
+                title,
+                status,
+                attachments.size());
+        for (int i = 0; i < attachments.size(); i++) {
+            String attachment = attachments.get(i);
+            TencentImageModerationResult result = tencentImageModerationService.moderateImageReference(attachment, traceId);
+            log.info("帖子图片审核结果 - TraceId: {}, 标题: {}, Index: {}, Total: {}, 图片: {}, Result: {}, Label: {}, SubLabel: {}, Score: {}",
+                    traceId,
+                    title,
+                    i,
+                    attachments.size(),
+                    attachment,
+                    result.getResult(),
+                    result.getLabel(),
+                    result.getSubLabel(),
+                    result.getScore());
+            tencentImageModerationService.assertAllowed(result, attachment, traceId);
+        }
+        log.info("帖子图片审核通过 - TraceId: {}, 标题: {}, Count: {}", traceId, title, attachments.size());
     }
 
     private String resolveCreateStatus(UserEntity currentUser, String requestedStatus) {
