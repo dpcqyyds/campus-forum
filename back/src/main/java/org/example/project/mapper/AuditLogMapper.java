@@ -25,4 +25,9 @@ public interface AuditLogMapper {
             @Param("role") String role,
             @Param("operator") String operator
     );
+
+    long countByActionAndCreatedDatePrefix(
+            @Param("action") String action,
+            @Param("datePrefix") String datePrefix
+    );
 }

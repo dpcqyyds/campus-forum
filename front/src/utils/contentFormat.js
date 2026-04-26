@@ -1,28 +1,45 @@
-﻿function escapeHtml(text = '') {
+import MarkdownIt from 'markdown-it'
+
+function escapeHtml(text = '') {
   return String(text)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/\"/g, '&quot;')
+    .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
 }
 
-export function renderMarkdownToHtml(markdown = '') {
-  const safe = escapeHtml(markdown)
+const markdown = new MarkdownIt({
+  html: false,
+  linkify: true,
+  breaks: true,
+  typographer: false,
+  langPrefix: 'language-'
+})
 
-  return safe
-    .replace(/^###\s+(.*)$/gm, '<h3>$1</h3>')
-    .replace(/^##\s+(.*)$/gm, '<h2>$1</h2>')
-    .replace(/^#\s+(.*)$/gm, '<h1>$1</h1>')
-    .replace(/^>\s+(.*)$/gm, '<blockquote>$1</blockquote>')
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.*?)\*/g, '<em>$1</em>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
-    .replace(/\n\n/g, '</p><p>')
-    .replace(/\n/g, '<br/>')
-    .replace(/^/, '<p>')
-    .replace(/$/, '</p>')
+const defaultLinkOpen = markdown.renderer.rules.link_open || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options))
+markdown.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+  tokens[idx].attrSet('target', '_blank')
+  tokens[idx].attrSet('rel', 'noreferrer')
+  return defaultLinkOpen(tokens, idx, options, env, self)
+}
+
+const defaultImage = markdown.renderer.rules.image || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options))
+markdown.renderer.rules.image = (tokens, idx, options, env, self) => {
+  tokens[idx].attrSet('loading', 'lazy')
+  return defaultImage(tokens, idx, options, env, self)
+}
+
+export function renderMarkdownToHtml(markdownText = '') {
+  return markdown.render(String(markdownText || ''))
+}
+
+export function renderFormattedContent(content = '') {
+  return renderMarkdownToHtml(content)
+}
+
+export function renderPlainTextToHtml(content = '') {
+  return escapeHtml(content).replace(/\n/g, '<br/>')
 }
 
 export function normalizeExternalLink(value = '') {

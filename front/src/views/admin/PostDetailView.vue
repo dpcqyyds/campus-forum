@@ -11,7 +11,7 @@ import {
   togglePostFavoriteApi,
   togglePostLikeApi
 } from '../../services/modules/forumApi'
-import { normalizeExternalLink, renderMarkdownToHtml } from '../../utils/contentFormat'
+import { renderFormattedContent, renderPlainTextToHtml } from '../../utils/contentFormat'
 import { useAuthStore } from '../../stores/auth'
 
 const route = useRoute()
@@ -32,10 +32,10 @@ const followedAuthor = ref(false)
 
 const formatLabel = computed(() => {
   const map = {
-    rich_text: '富文本',
+    rich_text: 'Markdown',
     markdown: 'Markdown',
-    image_gallery: '图文相册',
-    external_link: '外链分享'
+    plain_text: '普通文本',
+    image_gallery: '普通文本'
   }
   return map[post.value?.format] || post.value?.format || '-'
 })
@@ -51,8 +51,8 @@ const statusLabel = computed(() => {
   return map[post.value?.status] || post.value?.status || '-'
 })
 
-const normalizedLink = computed(() => normalizeExternalLink(post.value?.linkUrl || post.value?.content || ''))
-const markdownHtml = computed(() => renderMarkdownToHtml(post.value?.content || ''))
+const formattedHtml = computed(() => renderFormattedContent(post.value?.content || ''))
+const plainTextHtml = computed(() => renderPlainTextToHtml(post.value?.content || ''))
 const canOpenAuthorProfile = computed(() => Boolean(post.value?.authorId))
 const isOwnAuthor = computed(() => Number(post.value?.authorId) === Number(authStore.user?.id))
 const hasListContext = computed(() => route.query.from === 'home')
@@ -280,11 +280,10 @@ onMounted(async () => {
         <span class="chip chip-on" v-for="tag in post.tags" :key="tag">{{ tag }}</span>
       </div>
 
-      <article class="post-content" v-if="post.format === 'rich_text'" v-html="post.content || ''" />
-      <article class="post-content" v-else-if="post.format === 'markdown'" v-html="markdownHtml" />
+      <article class="post-content" v-if="post.format === 'rich_text' || post.format === 'markdown'" v-html="formattedHtml" />
 
-      <section v-else-if="post.format === 'image_gallery'" class="post-content">
-        <p class="hint" v-if="post.content">{{ post.content }}</p>
+      <section v-else-if="post.format === 'plain_text' || post.format === 'image_gallery'" class="post-content">
+        <article v-if="post.content" class="plain-text-content" v-html="plainTextHtml" />
         <div class="gallery-grid" v-if="post.attachments?.length">
           <div class="gallery-item" v-for="url in post.attachments" :key="url">
             <img :src="url" alt="gallery image" />
@@ -292,25 +291,7 @@ onMounted(async () => {
         </div>
       </section>
 
-      <section v-else-if="post.format === 'external_link'" class="post-content">
-        <p>
-          外链地址：
-          <a :href="normalizedLink" target="_blank" rel="noreferrer">{{ normalizedLink }}</a>
-        </p>
-        <p class="hint" v-if="post.linkSummary">{{ post.linkSummary }}</p>
-        <p v-if="post.content && post.content !== post.linkUrl">{{ post.content }}</p>
-      </section>
-
       <pre class="post-content" v-else>{{ post.content || '' }}</pre>
-
-      <div v-if="post.attachments?.length && post.format !== 'image_gallery'" class="attachments">
-        <h4>附件</h4>
-        <ul>
-          <li v-for="url in post.attachments" :key="url">
-            <a :href="url" target="_blank" rel="noreferrer">{{ url }}</a>
-          </li>
-        </ul>
-      </div>
 
       <section class="panel sub-panel">
         <h3>互动交流</h3>

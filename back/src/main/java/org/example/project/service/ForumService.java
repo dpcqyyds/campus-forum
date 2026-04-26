@@ -51,7 +51,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.net.URI;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -77,7 +76,7 @@ public class ForumService {
     private static final List<String> ALLOWED_ROLES = List.of("super_admin", "teacher", "student");
     private static final List<String> ALLOWED_USER_STATUS = List.of("active", "disabled");
     private static final List<String> ALLOWED_REVIEW_ACTIONS = List.of("approve", "reject");
-    private static final List<String> ALLOWED_POST_FORMATS = List.of("rich_text", "markdown", "image_gallery", "external_link");
+    private static final List<String> ALLOWED_POST_FORMATS = List.of("rich_text", "plain_text");
     private static final List<String> ALLOWED_POST_VISIBILITY = List.of("public", "campus", "private");
     private static final List<String> ALLOWED_POST_STATUS = List.of("draft", "pending", "published", "rejected", "hidden");
     private static final List<String> ALLOWED_PUBLISHED_FEEDS = List.of("all", "recommend", "hot", "latest", "followed");
@@ -302,11 +301,13 @@ public class ForumService {
         String trendDateFrom = trendStartDate.toString();
         String trendDateTo = today.toString();
         Map<String, Object> stats = new LinkedHashMap<>();
+        long reviewPassedToday = auditLogMapper.countByActionAndCreatedDatePrefix("review_approve", todayPrefix);
+        long reviewRejectedToday = auditLogMapper.countByActionAndCreatedDatePrefix("review_reject", todayPrefix);
 
         stats.put("totalUsers", userMapper.countAll());
         stats.put("totalPosts", postMapper.countAll());
         stats.put("pendingReviews", postMapper.countPendingReview(null, null, null));
-        stats.put("rejectedToday", postMapper.countByStatusAndUpdatedDatePrefix("rejected", todayPrefix));
+        stats.put("rejectedToday", reviewRejectedToday);
         stats.put("peakQps", 1260);
 
         String onlineSince = LocalDateTime.now().minusMinutes(ONLINE_ACTIVE_WINDOW_MINUTES).format(DB_TIME_FORMATTER);
@@ -315,8 +316,8 @@ public class ForumService {
         stats.put("totalComments", postCommentMapper.countAll());
         stats.put("totalLikes", postLikeMapper.countAll());
         stats.put("totalFavorites", postFavoriteMapper.countAll());
-        stats.put("reviewPassedToday", postMapper.countByStatusAndUpdatedDatePrefix("published", todayPrefix));
-        stats.put("reviewSubmittedToday", postMapper.countByStatusAndUpdatedDatePrefix("pending", todayPrefix));
+        stats.put("reviewPassedToday", reviewPassedToday);
+        stats.put("reviewSubmittedToday", reviewPassedToday + reviewRejectedToday);
         stats.put("publishedPosts", postMapper.countByStatus("published"));
         stats.put("hiddenPosts", postMapper.countByStatus("hidden"));
         stats.put("rejectedPosts", postMapper.countByStatus("rejected"));
@@ -350,8 +351,10 @@ public class ForumService {
         String linkSummary = normalizeText(request.linkSummary());
         String createStatus = resolveCreateStatus(currentUser, requestedStatus);
         boolean isDraftCreate = "draft".equals(createStatus);
-        if (!isDraftCreate) {
-            validatePostPayload(format, request.content(), attachments, linkUrl);
+        if (isDraftCreate) {
+            validatePostDraftPayload(format, attachments);
+        } else {
+            validatePostPayload(format, request.content(), attachments);
         }
 
         // 审核逻辑：仅在非草稿状态时进行审核
@@ -384,8 +387,7 @@ public class ForumService {
             }
 
             // 第二层：腾讯云审核（如果启用）
-            // 外链格式跳过云审核，避免正常链接被误判为广告
-            if (tencentModerationService != null && !"external_link".equals(format)) {
+            if (tencentModerationService != null) {
                 String fullText = buildFullText(
                     request.title(),
                     request.summary(),
@@ -398,14 +400,17 @@ public class ForumService {
                 org.example.project.dto.TencentModerationResult cloudResult =
                     tencentModerationService.moderateText(fullText);
 
-                // 记录腾讯云审核详细结果
-                log.info("腾讯云审核结果 - 成功: {}, 降级: {}, Result: {}, Label: {}, Score: {}, Keywords: {}",
+                log.info("腾讯云前置审核反馈 - 标题: {}, 成功: {}, 降级: {}, RequestId: {}, Suggestion: {}, Result: {}, Label: {}, Score: {}, Keywords: {}, Feedback: {}",
+                    request.title(),
                     cloudResult.isSuccess(),
                     cloudResult.isFallback(),
+                    cloudResult.getRequestId(),
+                    cloudResult.getSuggestion(),
                     cloudResult.getResult(),
                     cloudResult.getLabel(),
                     cloudResult.getScore(),
-                    cloudResult.getKeywords());
+                    cloudResult.getKeywords(),
+                    cloudResult.getFeedback());
 
                 // 处理云审核结果
                 if (cloudResult.isSuccess() && !cloudResult.isFallback()) {
@@ -449,10 +454,7 @@ public class ForumService {
                     }
                 }
             } else {
-                // 未启用云审核或外链格式，使用本地审核结果
-                if ("external_link".equals(format)) {
-                    log.info("外链格式跳过腾讯云审核，仅使用本地词库 - 标题: {}", request.title());
-                }
+                // 未启用云审核，使用本地审核结果
                 riskLevel = localResult.riskLevel();
                 if ("medium".equals(riskLevel)) {
                     createStatus = "pending";
@@ -464,7 +466,7 @@ public class ForumService {
         PostEntity post = new PostEntity();
         post.setTitle(request.title());
         post.setSummary(request.summary());
-        post.setContent(request.content());
+        post.setContent(request.content() == null ? "" : request.content());
         post.setFormat(format);
         post.setAttachmentsJson(writeJsonArray(attachments));
         post.setTagsJson(writeJsonArray(normalizeStringList(request.tags())));
@@ -522,13 +524,13 @@ public class ForumService {
         List<String> effectiveAttachments = request.attachments() == null
                 ? readJsonArray(old.getAttachmentsJson())
                 : normalizeStringList(request.attachments());
-        String effectiveLinkUrl = request.linkUrl() == null ? normalizeText(old.getLinkUrl()) : normalizeText(request.linkUrl());
         boolean contentChanged = request.format() != null
                 || request.content() != null
                 || request.attachments() != null
                 || request.linkUrl() != null;
-        if (contentChanged) {
-            validatePostPayload(effectiveFormat, effectiveContent, effectiveAttachments, effectiveLinkUrl);
+        boolean publishing = "pending".equals(status) || "published".equals(status);
+        if (contentChanged || publishing) {
+            validatePostPayload(effectiveFormat, effectiveContent, effectiveAttachments);
         }
         if (format != null) {
             validatePostFormat(format);
@@ -1287,59 +1289,56 @@ public class ForumService {
                 || request.linkUrl() != null
                 || request.linkTitle() != null
                 || request.linkSummary() != null
-                || request.galleryCaptions() != null
                 || request.tags() != null
-                || request.attachments() != null
                 || request.isTop() != null
                 || request.isFeatured() != null;
     }
 
-    private void validatePostPayload(String format, String content, List<String> attachments, String linkUrl) {
-        if ("rich_text".equals(format) || "markdown".equals(format)) {
+    private void validatePostPayload(String format, String content, List<String> attachments) {
+        validatePostDraftPayload(format, attachments);
+        if ("rich_text".equals(format)) {
             if (isBlank(content)) {
                 throw new ApiException("正文不能为空");
             }
             return;
         }
-        if ("image_gallery".equals(format)) {
-            if (attachments == null || attachments.isEmpty()) {
-                throw new ApiException("图文相册至少上传一张图片");
+        if ("plain_text".equals(format)) {
+            if (isBlank(content) && (attachments == null || attachments.isEmpty())) {
+                throw new ApiException("普通文本正文或图片至少填写一项");
             }
-            for (String attachment : attachments) {
-                String value = normalizeText(attachment);
-                if (isBlank(value)) {
-                    throw new ApiException("图片地址不能为空");
-                }
-                String lower = value.toLowerCase();
-                if (lower.startsWith("data:")) {
-                    throw new ApiException("图文相册仅支持图片 URL，不支持 base64");
-                }
-                if (!(lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("/uploads/"))) {
-                    throw new ApiException("图片地址格式不合法");
-                }
-            }
+            validateImageAttachments(attachments);
             return;
-        }
-        if ("external_link".equals(format)) {
-            validateExternalLink(linkUrl);
         }
     }
 
-    private void validateExternalLink(String linkUrl) {
-        if (isBlank(linkUrl)) {
-            throw new ApiException("外链地址不能为空");
+    private void validatePostDraftPayload(String format, List<String> attachments) {
+        if ("rich_text".equals(format)) {
+            if (attachments != null && !attachments.isEmpty()) {
+                throw new ApiException("Markdown 格式不支持图片附件，请选择普通文本格式");
+            }
+            return;
         }
-        try {
-            URI uri = URI.create(linkUrl);
-            String scheme = uri.getScheme();
-            if (scheme == null || (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme))) {
-                throw new ApiException("外链地址不合法，仅支持 http/https");
+        if ("plain_text".equals(format)) {
+            validateImageAttachments(attachments);
+        }
+    }
+
+    private void validateImageAttachments(List<String> attachments) {
+        if (attachments == null || attachments.isEmpty()) {
+            return;
+        }
+        for (String attachment : attachments) {
+            String value = normalizeText(attachment);
+            if (isBlank(value)) {
+                throw new ApiException("图片地址不能为空");
             }
-            if (isBlank(uri.getHost())) {
-                throw new ApiException("外链地址不合法，仅支持 http/https");
+            String lower = value.toLowerCase();
+            if (lower.startsWith("data:")) {
+                throw new ApiException("图片仅支持 URL，不支持 base64");
             }
-        } catch (IllegalArgumentException ex) {
-            throw new ApiException("外链地址不合法，仅支持 http/https");
+            if (!(lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("/uploads/"))) {
+                throw new ApiException("图片地址格式不合法");
+            }
         }
     }
 
@@ -1557,11 +1556,13 @@ public class ForumService {
             return null;
         }
         return switch (normalized.toLowerCase()) {
-            case "rich_text", "richtext", "rich-text", "rich", "富文本" -> "rich_text";
-            case "markdown", "md", "markdown_text", "markdown-text" -> "markdown";
+            case "rich_text", "richtext", "rich-text", "rich", "富文本", "markdown", "md", "markdown_text", "markdown-text" ->
+                    "rich_text";
+            case "plain_text", "plaintext", "plain-text", "plain", "text", "normal_text", "normal-text", "普通文本" ->
+                    "plain_text";
             case "image_gallery", "imagegallery", "image-gallery", "image_album", "image-album", "album", "gallery", "图文相册", "相册" ->
-                    "image_gallery";
-            case "external_link", "external", "link", "url", "外链", "外部链接" -> "external_link";
+                    "plain_text";
+            case "external_link", "external", "link", "url", "外链", "外部链接" -> "plain_text";
             default -> normalized;
         };
     }

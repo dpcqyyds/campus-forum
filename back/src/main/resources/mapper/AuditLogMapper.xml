@@ -66,4 +66,11 @@
         </where>
     </select>
 
+    <select id="countByActionAndCreatedDatePrefix" resultType="long">
+        SELECT COUNT(1)
+        FROM audit_log
+        WHERE action = #{action}
+          AND created_at LIKE CONCAT(#{datePrefix}, '%')
+    </select>
+
 </mapper>

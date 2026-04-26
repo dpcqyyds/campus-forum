@@ -96,14 +96,15 @@ public class TencentCloudModerationService {
 
             long duration = System.currentTimeMillis() - startTime;
             log.debug("腾讯云审核API调用耗时: {}ms", duration);
+            String responseBody = response.getBody();
 
-            // 打印完整响应用于调试
-            log.info("腾讯云API完整响应: {}", response.getBody());
+            // 打印腾讯云原始反馈，便于排查审核命中原因。
+            log.info("腾讯云前置审核原始反馈: {}", responseBody);
 
             // 解析响应
-            TencentModerationResult result = parseResponse(response.getBody());
-            log.info("腾讯云审核结果: Result={}, Label={}, Score={}, Keywords={}",
-                result.getResult(), result.getLabel(), result.getScore(), result.getKeywords());
+            TencentModerationResult result = parseResponse(responseBody);
+            result.setRawResponse(responseBody);
+            log.info("腾讯云前置审核反馈摘要: {}", result.getFeedback());
 
             return result;
 
@@ -177,18 +178,24 @@ public class TencentCloudModerationService {
     private TencentModerationResult parseResponse(String responseBody) throws Exception {
         JsonNode root = objectMapper.readTree(responseBody);
         JsonNode response = root.get("Response");
+        String requestId = response.has("RequestId") ? response.get("RequestId").asText() : null;
 
         // 检查是否有错误
         if (response.has("Error")) {
             String errorCode = response.get("Error").get("Code").asText();
             String errorMessage = response.get("Error").get("Message").asText();
             log.error("腾讯云审核API返回错误: Code={}, Message={}", errorCode, errorMessage);
-            return TencentModerationResult.fallback();
+            TencentModerationResult fallback = TencentModerationResult.fallback();
+            fallback.setRequestId(requestId);
+            fallback.setFeedback(String.format("RequestId=%s, ErrorCode=%s, ErrorMessage=%s", requestId, errorCode, errorMessage));
+            fallback.setRawResponse(responseBody);
+            return fallback;
         }
 
         // 解析审核结果
         String suggestionStr = response.has("Suggestion") ? response.get("Suggestion").asText() : "Pass";
         String label = response.has("Label") ? response.get("Label").asText() : "Normal";
+        String detailResults = response.has("DetailResults") ? response.get("DetailResults").toString() : "[]";
 
         // 将字符串Suggestion转换为数字
         // Block=1(违规), Review=2(疑似), Pass=0(正常)
@@ -217,15 +224,31 @@ public class TencentCloudModerationService {
         }
 
         // 提取关键词
-        List<String> keywords = new ArrayList<>();
+        Set<String> keywords = new LinkedHashSet<>();
         if (response.has("Keywords") && response.get("Keywords").isArray()) {
             for (JsonNode keyword : response.get("Keywords")) {
                 keywords.add(keyword.asText());
             }
         }
+        if (response.has("DetailResults") && response.get("DetailResults").isArray()) {
+            for (JsonNode detail : response.get("DetailResults")) {
+                if (detail.has("Keywords") && detail.get("Keywords").isArray()) {
+                    for (JsonNode keyword : detail.get("Keywords")) {
+                        keywords.add(keyword.asText());
+                    }
+                }
+            }
+        }
 
         TencentModerationResult result = TencentModerationResult.success(suggestion, label, score);
-        result.setKeywords(keywords);
+        result.setSuggestion(suggestionStr);
+        result.setRequestId(requestId);
+        result.setKeywords(new ArrayList<>(keywords));
+        result.setFeedback(String.format(
+            "RequestId=%s, Suggestion=%s, Result=%s, Label=%s, Score=%s, Keywords=%s, DetailResults=%s",
+            requestId, suggestionStr, suggestion, label, score, result.getKeywords(), detailResults
+        ));
+        result.setRawResponse(responseBody);
 
         return result;
     }
@@ -260,6 +283,5 @@ public class TencentCloudModerationService {
         return sb.toString();
     }
 }
-
 
 

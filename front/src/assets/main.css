@@ -69,7 +69,8 @@ button.danger:hover {
   justify-content: center;
   padding: 24px;
   position: relative;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: linear-gradient(135deg, #e0f2fe 0%, #bae6fd 50%, #7dd3fc 100%);
 }
 
@@ -1173,7 +1174,7 @@ textarea {
   color: #1e40af;
 }
 
-.workbench-format-chip.format-markdown {
+.workbench-format-chip.format-plain-text {
   background: linear-gradient(135deg, #ccfbf1 0%, #99f6e4 100%);
   border-color: #5eead4;
   color: #0f766e;
@@ -1270,8 +1271,73 @@ textarea {
   border-radius: 10px;
   border: 1px solid #e2e8f0;
   background: #f8fafc;
-  white-space: pre-wrap;
+  white-space: normal;
   line-height: 1.7;
+}
+
+.post-content img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  margin: 10px 0;
+}
+
+.post-content a > img {
+  cursor: pointer;
+}
+
+.post-content code {
+  border-radius: 4px;
+  padding: 2px 5px;
+  background: #e2e8f0;
+  color: #0f172a;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+  font-size: 0.92em;
+}
+
+.post-content pre {
+  margin: 12px 0;
+  padding: 14px;
+  overflow-x: auto;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #e2e8f0;
+  white-space: pre;
+}
+
+.post-content pre code {
+  display: block;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  white-space: pre;
+}
+
+.post-content blockquote {
+  margin: 10px 0;
+  padding: 8px 12px;
+  border-left: 4px solid #93c5fd;
+  background: #eff6ff;
+  color: #334155;
+}
+
+.post-content hr {
+  margin: 16px 0;
+  border: 0;
+  border-top: 1px solid #cbd5e1;
+}
+
+.post-content p,
+.post-content ul,
+.post-content ol,
+.post-content blockquote {
+  margin: 8px 0;
+}
+
+.post-content ul,
+.post-content ol {
+  padding-left: 22px;
 }
 
 .attachments {
@@ -1801,5 +1867,11 @@ td {
   .pie-chart::after {
     width: 80px;
     height: 80px;
+  }
+}
+
+@media (max-height: 720px) {
+  .auth-page {
+    align-items: flex-start;
   }
 }

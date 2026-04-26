@@ -11,6 +11,9 @@ public class TencentModerationResult {
     private Integer result;         // 审核结果: 0正常/1违规/2疑似
     private List<String> keywords;  // 命中的关键词
     private String suggestion;      // 建议操作
+    private String requestId;       // 腾讯云请求ID
+    private String feedback;        // 腾讯云反馈摘要
+    private String rawResponse;     // 腾讯云原始响应
     private boolean fallback;       // 是否降级到本地审核
 
     public TencentModerationResult() {
@@ -80,6 +83,30 @@ public class TencentModerationResult {
         this.suggestion = suggestion;
     }
 
+    public String getRequestId() {
+        return requestId;
+    }
+
+    public void setRequestId(String requestId) {
+        this.requestId = requestId;
+    }
+
+    public String getFeedback() {
+        return feedback;
+    }
+
+    public void setFeedback(String feedback) {
+        this.feedback = feedback;
+    }
+
+    public String getRawResponse() {
+        return rawResponse;
+    }
+
+    public void setRawResponse(String rawResponse) {
+        this.rawResponse = rawResponse;
+    }
+
     public boolean isFallback() {
         return fallback;
     }
@@ -96,6 +123,7 @@ public class TencentModerationResult {
         dto.setResult(result);
         dto.setLabel(label);
         dto.setScore(score);
+        dto.setSuggestion(toSuggestion(result));
 
         // 根据result判断是否通过
         dto.setPass(result == 0);
@@ -118,6 +146,19 @@ public class TencentModerationResult {
         dto.setSuccess(false);
         dto.setFallback(true);
         dto.setPass(false);
+        dto.setSuggestion("Fallback");
+        dto.setFeedback("腾讯云审核调用失败，已降级到本地审核");
         return dto;
+    }
+
+    private static String toSuggestion(Integer result) {
+        if (result == null) {
+            return null;
+        }
+        return switch (result) {
+            case 1 -> "Block";
+            case 2 -> "Review";
+            default -> "Pass";
+        };
     }
 }

@@ -34,10 +34,10 @@ const editForm = reactive({
 })
 
 const formatMap = {
-  rich_text: '富文本',
+  rich_text: 'Markdown',
   markdown: 'Markdown',
-  image_gallery: '图文相册',
-  external_link: '外链分享'
+  plain_text: '普通文本',
+  image_gallery: '普通文本'
 }
 
 const statusMap = {
@@ -219,10 +219,8 @@ onMounted(async () => {
       </select>
       <select v-model="filters.format">
         <option value="">全部格式</option>
-        <option value="rich_text">富文本</option>
-        <option value="markdown">Markdown</option>
-        <option value="image_gallery">图文相册</option>
-        <option value="external_link">外链分享</option>
+        <option value="rich_text">Markdown</option>
+        <option value="plain_text">普通文本</option>
       </select>
       <select v-model="filters.status">
         <option value="published,hidden">已发布 + 已下架</option>
@@ -402,10 +400,8 @@ onMounted(async () => {
           <label>
             格式
             <select v-model="editForm.format">
-              <option value="rich_text">富文本</option>
-              <option value="markdown">Markdown</option>
-              <option value="image_gallery">图文相册</option>
-              <option value="external_link">外链分享</option>
+              <option value="rich_text">Markdown</option>
+              <option value="plain_text">普通文本</option>
             </select>
           </label>
           <label>

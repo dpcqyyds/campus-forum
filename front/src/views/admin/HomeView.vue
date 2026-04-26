@@ -38,15 +38,15 @@ const pageSizeOptions = [10, 20, 50, 100]
 
 const formatClassMap = {
   rich_text: 'format-rich-text',
-  markdown: 'format-markdown',
-  image_gallery: 'format-image-gallery',
-  external_link: 'format-external-link'
+  markdown: 'format-rich-text',
+  plain_text: 'format-plain-text',
+  image_gallery: 'format-plain-text'
 }
 const formatLabelMap = {
-  rich_text: '富文本',
+  rich_text: 'Markdown',
   markdown: 'Markdown',
-  image_gallery: '图文相册',
-  external_link: '外链'
+  plain_text: '普通文本',
+  image_gallery: '普通文本'
 }
 const boardThemes = [
   { cardStart: '#ffffff', cardEnd: '#f8fafc', line: '#2563eb', pillBg: '#e8f0ff', pillBorder: '#93c5fd', pillText: '#1e3a8a' },

@@ -84,10 +84,8 @@ public record PostView(
             return null;
         }
         return switch (format) {
-            case "rich_text" -> "富文本";
-            case "markdown" -> "Markdown";
-            case "image_gallery" -> "图文相册";
-            case "external_link" -> "外链分享";
+            case "rich_text", "markdown" -> "Markdown";
+            case "plain_text" -> "普通文本";
             default -> format;
         };
     }

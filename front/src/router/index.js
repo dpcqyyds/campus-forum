@@ -4,7 +4,11 @@ import { useAuthStore } from '../stores/auth'
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
-    { path: '/', redirect: '/admin/home' },
+    {
+      path: '/',
+      name: 'site-home',
+      component: () => import('../views/public/SiteHomeView.vue')
+    },
     {
       path: '/login',
       name: 'login',
@@ -154,4 +158,3 @@ router.beforeEach(async (to) => {
 })
 
 export default router
-
