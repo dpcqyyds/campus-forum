@@ -1,6 +1,7 @@
 package org.example.project.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.example.project.dto.BoardView;
 import org.example.project.dto.CommentView;
@@ -9,6 +10,7 @@ import org.example.project.dto.PostView;
 import org.example.project.dto.RolePermissionsView;
 import org.example.project.dto.AuditLogView;
 import org.example.project.dto.TencentImageModerationResult;
+import org.example.project.dto.TencentModerationResult;
 import org.example.project.dto.TopicOptionView;
 import org.example.project.dto.TopicView;
 import org.example.project.dto.request.CreateBoardRequest;
@@ -52,6 +54,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.URI;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -77,7 +80,7 @@ public class ForumService {
     private static final List<String> ALLOWED_ROLES = List.of("super_admin", "teacher", "student");
     private static final List<String> ALLOWED_USER_STATUS = List.of("active", "disabled");
     private static final List<String> ALLOWED_REVIEW_ACTIONS = List.of("approve", "reject");
-    private static final List<String> ALLOWED_POST_FORMATS = List.of("rich_text", "plain_text");
+    private static final List<String> ALLOWED_POST_FORMATS = List.of("rich_text", "plain_text", "external_link");
     private static final List<String> ALLOWED_POST_VISIBILITY = List.of("public", "campus", "private");
     private static final List<String> ALLOWED_POST_STATUS = List.of("draft", "pending", "published", "rejected", "hidden");
     private static final List<String> ALLOWED_PUBLISHED_FEEDS = List.of("all", "recommend", "hot", "latest", "followed");
@@ -356,115 +359,123 @@ public class ForumService {
         String createStatus = resolveCreateStatus(currentUser, requestedStatus);
         boolean isDraftCreate = "draft".equals(createStatus);
         if (isDraftCreate) {
-            validatePostDraftPayload(format, attachments);
+            validatePostDraftPayload(format, attachments, linkUrl);
         } else {
-            validatePostPayload(format, request.content(), attachments);
+            validatePostPayload(format, request.content(), attachments, linkUrl);
         }
 
-        // 审核逻辑：仅在非草稿状态时进行审核
+        boolean bypassModeration = canBypassPostModeration(currentUser);
+        // 审核逻辑：仅在非草稿且当前角色不豁免时进行审核
         String riskLevel = "low";
         String moderationReason = null;  // 记录审核未通过的原因
         List<String> moderationKeywords = null;  // 记录命中的关键词
-        if (!isDraftCreate) {
-            log.info("开始审核帖子 - 标题: {}, 格式: {}, 作者: {}", request.title(), format, currentUser.getUsername());
+        TextPostModerationDecision textModerationDecision = null;
+        if (!isDraftCreate && !bypassModeration) {
+            if (shouldUseTextPostModeration(format)) {
+                textModerationDecision = moderateTextPostSubmission(
+                        format,
+                        request.title(),
+                        request.summary(),
+                        request.content(),
+                        normalizeStringList(request.tags()),
+                        linkUrl,
+                        linkTitle,
+                        linkSummary
+                );
+                createStatus = textModerationDecision.status();
+                riskLevel = textModerationDecision.riskLevel();
+                if (textModerationDecision.systemApproved()) {
+                    ImageModerationDecision imageModerationDecision = enforceImageModeration(request.title(), attachments, createStatus);
+                    if (imageModerationDecision.reviewRequired()) {
+                        createStatus = "pending";
+                        riskLevel = "medium";
+                    }
+                }
+            } else {
+                log.info("开始审核帖子 - 标题: {}, 格式: {}, 作者: {}", request.title(), format, currentUser.getUsername());
 
-            // 第一层：本地敏感词审核
-            ModerationCheckResult localResult = preModerationCheck(
-                    request.title(),
-                    request.summary(),
-                    request.content(),
-                    normalizeStringList(request.tags()),
-                    linkTitle,
-                    linkSummary
-            );
-
-            log.info("本地审核结果 - 风险等级: {}, 命中词: {}", localResult.riskLevel(), localResult.hitWords());
-
-            // 本地审核命中blocked-words，直接拒绝
-            if ("high".equals(localResult.riskLevel())) {
-                log.warn("本地审核拦截 - 标题: {}, 命中违禁词: {}", request.title(), localResult.hitWords());
-                Map<String, Object> data = new LinkedHashMap<>();
-                data.put("message", "请修改后再提交");
-                data.put("riskLevel", localResult.riskLevel());
-                data.put("hitWords", localResult.hitWords());
-                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, 42201, "内容命中违禁规则", data);
-            }
-
-            // 第二层：腾讯云审核（如果启用）
-            if (tencentModerationService != null) {
-                String fullText = buildFullText(
-                    request.title(),
-                    request.summary(),
-                    request.content(),
-                    normalizeStringList(request.tags()),
-                    linkTitle,
-                    linkSummary
+                // 第一层：本地敏感词审核
+                ModerationCheckResult localResult = preModerationCheck(
+                        request.title(),
+                        request.summary(),
+                        request.content(),
+                        normalizeStringList(request.tags()),
+                        linkUrl,
+                        linkTitle,
+                        linkSummary
                 );
 
-                org.example.project.dto.TencentModerationResult cloudResult =
-                    tencentModerationService.moderateText(fullText);
+                log.info("本地审核结果 - 风险等级: {}, 命中词: {}", localResult.riskLevel(), localResult.hitWords());
 
-                log.info("腾讯云前置审核反馈 - 标题: {}, 成功: {}, 降级: {}, RequestId: {}, Suggestion: {}, Result: {}, Label: {}, Score: {}, Keywords: {}, Feedback: {}",
-                    request.title(),
-                    cloudResult.isSuccess(),
-                    cloudResult.isFallback(),
-                    cloudResult.getRequestId(),
-                    cloudResult.getSuggestion(),
-                    cloudResult.getResult(),
-                    cloudResult.getLabel(),
-                    cloudResult.getScore(),
-                    cloudResult.getKeywords(),
-                    cloudResult.getFeedback());
+                // 本地审核命中blocked-words，直接拒绝
+                if ("high".equals(localResult.riskLevel())) {
+                    rejectByLocalBlockedWords(request.title(), localResult);
+                }
 
-                // 处理云审核结果
-                if (cloudResult.isSuccess() && !cloudResult.isFallback()) {
-                    if (!cloudResult.isPass()) {
-                        // Result=1 违规，直接拒绝
-                        if (cloudResult.getResult() == 1) {
-                            // 构建友好的错误提示
-                            String reason = getLabelDescription(cloudResult.getLabel());
-                            log.warn("内容审核未通过 - 标题: {}, Label: {}, Score: {}, Keywords: {}",
-                                request.title(), cloudResult.getLabel(), cloudResult.getScore(), cloudResult.getKeywords());
-                            Map<String, Object> data = new LinkedHashMap<>();
-                            data.put("reason", reason);
-                            data.put("label", cloudResult.getLabel());
-                            data.put("score", cloudResult.getScore());
-                            if (cloudResult.getKeywords() != null && !cloudResult.getKeywords().isEmpty()) {
-                                data.put("keywords", cloudResult.getKeywords());
+                // 第二层：腾讯云审核（如果启用）
+                if (tencentModerationService != null) {
+                    String fullText = buildFullText(
+                        request.title(),
+                        request.summary(),
+                        request.content(),
+                        normalizeStringList(request.tags()),
+                        linkUrl,
+                        linkTitle,
+                        linkSummary
+                    );
+
+                    TencentModerationResult cloudResult = tencentModerationService.moderateText(fullText);
+
+                    logTencentModerationSummary(request.title(), cloudResult);
+
+                    // 处理云审核结果
+                    if (cloudResult.isSuccess() && !cloudResult.isFallback()) {
+                        if (!cloudResult.isPass()) {
+                            // Result=1 违规，直接拒绝
+                            if (cloudResult.getResult() == 1) {
+                                rejectByTencentModeration(request.title(), cloudResult);
                             }
-                            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, 42202,
-                                "内容审核未通过：" + reason, data);
-                        }
-                        // Result=2 疑似，强制转为pending状态
-                        if (cloudResult.getResult() == 2) {
-                            log.info("内容疑似违规，转为待审核 - 标题: {}, Label: {}, Score: {}",
-                                request.title(), cloudResult.getLabel(), cloudResult.getScore());
-                            createStatus = "pending";
-                            riskLevel = "medium";
-                            moderationReason = getLabelDescription(cloudResult.getLabel());
-                            moderationKeywords = cloudResult.getKeywords();
+                            // Result=2 疑似，强制转为pending状态
+                            if (cloudResult.getResult() == 2) {
+                                log.info("内容疑似违规，转为待审核 - 标题: {}, Label: {}, Score: {}",
+                                    request.title(), cloudResult.getLabel(), cloudResult.getScore());
+                                createStatus = "pending";
+                                riskLevel = "medium";
+                                moderationReason = getLabelDescription(cloudResult.getLabel());
+                                moderationKeywords = cloudResult.getKeywords();
+                            }
+                        } else {
+                            log.info("内容审核通过 - 标题: {}", request.title());
+                            riskLevel = "low";
                         }
                     } else {
-                        log.info("内容审核通过 - 标题: {}", request.title());
-                        riskLevel = "low";
+                        // 云审核失败，降级使用本地审核结果
+                        log.warn("腾讯云审核失败，使用本地审核结果 - 标题: {}, 本地风险等级: {}",
+                            request.title(), localResult.riskLevel());
+                        riskLevel = localResult.riskLevel();
+                        if ("medium".equals(riskLevel)) {
+                            createStatus = "pending";
+                        }
                     }
                 } else {
-                    // 云审核失败，降级使用本地审核结果
-                    log.warn("腾讯云审核失败，使用本地审核结果 - 标题: {}, 本地风险等级: {}",
-                        request.title(), localResult.riskLevel());
+                    // 未启用云审核，使用本地审核结果
                     riskLevel = localResult.riskLevel();
                     if ("medium".equals(riskLevel)) {
                         createStatus = "pending";
                     }
                 }
-            } else {
-                // 未启用云审核，使用本地审核结果
-                riskLevel = localResult.riskLevel();
-                if ("medium".equals(riskLevel)) {
+                ImageModerationDecision imageModerationDecision = enforceImageModeration(request.title(), attachments, createStatus);
+                if (imageModerationDecision.reviewRequired()) {
                     createStatus = "pending";
+                    riskLevel = "medium";
                 }
             }
-            enforceImageModeration(request.title(), attachments, createStatus);
+        } else if (!isDraftCreate) {
+            log.info("帖子审核跳过 - 标题: {}, 格式: {}, 作者: {}, 角色: {}, Reason: moderation bypass",
+                    request.title(),
+                    format,
+                    currentUser.getUsername(),
+                    currentUser.getRole());
         }
 
         BoardEntity board = getBoardOrThrow(request.boardId());
@@ -498,6 +509,9 @@ public class ForumService {
         if (created == null) {
             throw new ApiException("帖子写入后查询失败");
         }
+        if (textModerationDecision != null && textModerationDecision.systemApproved() && "published".equals(created.getStatus())) {
+            createAuditLog("review_approve", "系统审核通过", created, systemOperator(), "status: pending -> published");
+        }
 
         return created;
     }
@@ -521,25 +535,70 @@ public class ForumService {
         String format = normalizePostFormat(request.format());
         String visibility = normalizeText(request.visibility());
         String status = normalizePostStatus(request.status());
+        boolean bypassModeration = canBypassPostModeration(operator);
+        if (isAuthor && bypassModeration && "pending".equals(status)) {
+            status = "published";
+        }
+        if (isAuthor) {
+            validatePublishedAuthorUpdateRule(old, request, status);
+        }
         if (isAuthor && !isManager) {
-            validateAuthorPostUpdateRule(old, request, status);
+            validateAuthorPostUpdateRule(old, request, status, bypassModeration);
         }
         String effectiveFormat = format == null ? old.getFormat() : format;
+        String effectiveTitle = request.title() == null ? old.getTitle() : request.title();
+        String effectiveSummary = request.summary() == null ? old.getSummary() : request.summary();
         String effectiveContent = request.content() == null ? old.getContent() : request.content();
         String effectiveStatus = status == null ? old.getStatus() : status;
+        String effectiveLinkUrl = request.linkUrl() == null ? old.getLinkUrl() : normalizeText(request.linkUrl());
+        String effectiveLinkTitle = request.linkTitle() == null ? old.getLinkTitle() : normalizeText(request.linkTitle());
+        String effectiveLinkSummary = request.linkSummary() == null ? old.getLinkSummary() : normalizeText(request.linkSummary());
+        List<String> effectiveTags = request.tags() == null
+                ? readJsonArray(old.getTagsJson())
+                : normalizeStringList(request.tags());
         List<String> effectiveAttachments = request.attachments() == null
                 ? readJsonArray(old.getAttachmentsJson())
                 : normalizeStringList(request.attachments());
         boolean contentChanged = request.format() != null
                 || request.content() != null
                 || request.attachments() != null
-                || request.linkUrl() != null;
+                || request.linkUrl() != null
+                || request.linkTitle() != null
+                || request.linkSummary() != null;
         boolean publishing = "pending".equals(status) || "published".equals(status);
         if (contentChanged || publishing) {
-            validatePostPayload(effectiveFormat, effectiveContent, effectiveAttachments);
+            if ("draft".equals(effectiveStatus) || "rejected".equals(effectiveStatus)) {
+                validatePostDraftPayload(effectiveFormat, effectiveAttachments, effectiveLinkUrl);
+            } else {
+                validatePostPayload(effectiveFormat, effectiveContent, effectiveAttachments, effectiveLinkUrl);
+            }
         }
-        if ((contentChanged || publishing) && shouldModeratePostImages(effectiveStatus)) {
-            enforceImageModeration(firstNonBlank(request.title(), old.getTitle()), effectiveAttachments, effectiveStatus);
+        TextPostModerationDecision textModerationDecision = null;
+        if (isAuthor && !bypassModeration && publishing && shouldUseTextPostModeration(effectiveFormat)) {
+            textModerationDecision = moderateTextPostSubmission(
+                    effectiveFormat,
+                    effectiveTitle,
+                    effectiveSummary,
+                    effectiveContent,
+                    effectiveTags,
+                    effectiveLinkUrl,
+                    effectiveLinkTitle,
+                    effectiveLinkSummary
+            );
+            status = textModerationDecision.status();
+            effectiveStatus = status;
+        }
+        ImageModerationDecision imageModerationDecision = new ImageModerationDecision(false);
+        boolean shouldRunImageModeration = (contentChanged || publishing)
+                && !bypassModeration
+                && shouldModeratePostImages(effectiveStatus)
+                && (textModerationDecision == null || textModerationDecision.systemApproved());
+        if (shouldRunImageModeration) {
+            imageModerationDecision = enforceImageModeration(effectiveTitle, effectiveAttachments, effectiveStatus);
+            if (imageModerationDecision.reviewRequired()) {
+                status = "pending";
+                effectiveStatus = status;
+            }
         }
         if (format != null) {
             validatePostFormat(format);
@@ -552,6 +611,11 @@ public class ForumService {
         if (status != null) {
             validatePostStatus(status);
             update.setStatus(status);
+        }
+        if (imageModerationDecision.reviewRequired()) {
+            update.setRiskLevel("medium");
+        } else if (textModerationDecision != null) {
+            update.setRiskLevel(textModerationDecision.riskLevel());
         }
         if (request.boardId() != null) {
             BoardEntity board = getBoardOrThrow(request.boardId());
@@ -569,13 +633,13 @@ public class ForumService {
             update.setGalleryCaptionsJson(writeJsonArray(normalizeStringList(request.galleryCaptions())));
         }
         if (request.linkUrl() != null) {
-            update.setLinkUrl(normalizeText(request.linkUrl()));
+            update.setLinkUrl(normalizeText(request.linkUrl()) == null ? "" : normalizeText(request.linkUrl()));
         }
         if (request.linkTitle() != null) {
-            update.setLinkTitle(normalizeText(request.linkTitle()));
+            update.setLinkTitle(normalizeText(request.linkTitle()) == null ? "" : normalizeText(request.linkTitle()));
         }
         if (request.linkSummary() != null) {
-            update.setLinkSummary(normalizeText(request.linkSummary()));
+            update.setLinkSummary(normalizeText(request.linkSummary()) == null ? "" : normalizeText(request.linkSummary()));
         }
         update.setIsTop(request.isTop());
         update.setIsFeatured(request.isFeatured());
@@ -585,7 +649,12 @@ public class ForumService {
         if (updated != null && !Objects.equals(old.getStatus(), updated.getStatus())) {
             String action;
             String actionLabel;
-            if ("published".equals(old.getStatus()) && "hidden".equals(updated.getStatus())) {
+            if (textModerationDecision != null && textModerationDecision.systemApproved() && "published".equals(updated.getStatus())) {
+                action = "review_approve";
+                actionLabel = "系统审核通过";
+                createAuditLog(action, actionLabel, updated, systemOperator(), "status: " + old.getStatus() + " -> " + updated.getStatus());
+                return updated;
+            } else if ("published".equals(old.getStatus()) && "hidden".equals(updated.getStatus())) {
                 action = "post_hide";
                 actionLabel = "帖子下架";
             } else if ("hidden".equals(old.getStatus()) && "published".equals(updated.getStatus())) {
@@ -655,6 +724,7 @@ public class ForumService {
             int pageSize
     ) {
         String normalizedFormat = normalizePostFormat(format);
+        List<String> normalizedFormats = normalizePostFormatGroup(format);
         if (normalizedFormat != null) {
             validatePostFormat(normalizedFormat);
         }
@@ -677,6 +747,7 @@ public class ForumService {
                 normalizeText(tag),
                 boardId,
                 normalizedFormat,
+                normalizedFormats,
                 from,
                 to,
                 offset,
@@ -699,6 +770,11 @@ public class ForumService {
         String from = normalizeDateBound(dateFrom, true);
         String to = normalizeDateBound(dateTo, false);
         List<String> keywordTerms = buildPublishedSearchTerms(keyword);
+        String normalizedFormat = normalizePostFormat(format);
+        List<String> normalizedFormats = normalizePostFormatGroup(format);
+        if (normalizedFormat != null) {
+            validatePostFormat(normalizedFormat);
+        }
         return postMapper.countPublished(
                 normalizedFeed,
                 currentUserId,
@@ -706,7 +782,8 @@ public class ForumService {
                 normalizeText(author),
                 normalizeText(tag),
                 boardId,
-                normalizePostFormat(format),
+                normalizedFormat,
+                normalizedFormats,
                 from,
                 to
         );
@@ -935,7 +1012,7 @@ public class ForumService {
         userData.put("joinedAt", user.getCreatedAt());
 
         Map<String, Object> stats = new LinkedHashMap<>();
-        stats.put("postCount", countPosts(null, null, null, null, null, user.getUsername()));
+        stats.put("postCount", countPosts(null, "published", null, null, null, user.getUsername()));
         stats.put("commentCount", postCommentMapper.countByUserId(user.getId(), null));
         stats.put("likeCount", postLikeMapper.countByUserId(user.getId()));
         stats.put("favoriteCount", postFavoriteMapper.countByUserId(user.getId()));
@@ -964,7 +1041,7 @@ public class ForumService {
         userData.put("joinedAt", user.getCreatedAt());
 
         Map<String, Object> stats = new LinkedHashMap<>();
-        stats.put("postCount", countPosts(null, null, null, null, null, user.getUsername()));
+        stats.put("postCount", countPosts(null, "published", null, null, null, user.getUsername()));
         stats.put("commentCount", postCommentMapper.countByUserId(user.getId(), null));
         stats.put("followerCount", userFollowMapper.countFollowerByTargetUserId(user.getId()));
         stats.put("followingCount", userFollowMapper.countFollowing(user.getId(), null));
@@ -1259,31 +1336,42 @@ public class ForumService {
         }
     }
 
-    private void validateAuthorPostUpdateRule(PostEntity old, UpdatePostRequest request, String targetStatus) {
+    private void validateAuthorPostUpdateRule(PostEntity old, UpdatePostRequest request, String targetStatus, boolean allowDirectPublish) {
         if (hasRestrictedAuthorFields(request)) {
             throw new ApiException("用户仅可编辑标题、摘要、正文或执行状态流转");
         }
-        if ("published".equals(targetStatus)) {
+        boolean hasLinkChange = request.linkUrl() != null || request.linkTitle() != null || request.linkSummary() != null;
+        if ("published".equals(targetStatus) && !allowDirectPublish) {
             throw new ApiException("普通用户不允许直接发布帖子");
         }
         String currentStatus = old.getStatus();
         if ("published".equals(currentStatus)) {
-            boolean hasContentChange = request.title() != null || request.summary() != null || request.content() != null;
+            boolean hasContentChange = request.title() != null || request.summary() != null || request.content() != null || hasLinkChange;
             if (!"hidden".equals(targetStatus) || hasContentChange) {
                 throw new ApiException("已发布帖子仅支持删除");
             }
             return;
         }
         if ("pending".equals(currentStatus)) {
+            boolean hasContentChange = request.title() != null
+                    || request.summary() != null
+                    || request.content() != null
+                    || request.attachments() != null
+                    || request.galleryCaptions() != null
+                    || hasLinkChange;
+            if (hasContentChange) {
+                throw new ApiException("待审核帖子不可编辑，请撤回为草稿后修改");
+            }
             if (targetStatus != null && !"pending".equals(targetStatus) && !"draft".equals(targetStatus)) {
-                throw new ApiException("待审核帖子仅支持撤回或编辑");
+                throw new ApiException("待审核帖子仅支持撤回为草稿");
             }
             return;
         }
         if ("draft".equals(currentStatus) || "rejected".equals(currentStatus)) {
             if (targetStatus != null
                     && !Objects.equals(targetStatus, currentStatus)
-                    && !"pending".equals(targetStatus)) {
+                    && !"pending".equals(targetStatus)
+                    && !(allowDirectPublish && "published".equals(targetStatus))) {
                 throw new ApiException("草稿/驳回帖子仅支持编辑或重新发布");
             }
             return;
@@ -1291,20 +1379,40 @@ public class ForumService {
         throw new ApiException("当前状态不支持该操作");
     }
 
-    private boolean hasRestrictedAuthorFields(UpdatePostRequest request) {
-        return request.format() != null
+    private void validatePublishedAuthorUpdateRule(PostEntity old, UpdatePostRequest request, String targetStatus) {
+        if (!"published".equals(old.getStatus())) {
+            return;
+        }
+        boolean hasEdit = request.title() != null
+                || request.summary() != null
+                || request.content() != null
+                || request.format() != null
                 || request.boardId() != null
                 || request.visibility() != null
                 || request.linkUrl() != null
                 || request.linkTitle() != null
                 || request.linkSummary() != null
                 || request.tags() != null
+                || request.attachments() != null
+                || request.galleryCaptions() != null
+                || request.isTop() != null
+                || request.isFeatured() != null;
+        if (hasEdit || (targetStatus != null && !"hidden".equals(targetStatus))) {
+            throw new ApiException("已发布帖子不能编辑，仅支持删除");
+        }
+    }
+
+    private boolean hasRestrictedAuthorFields(UpdatePostRequest request) {
+        return request.format() != null
+                || request.boardId() != null
+                || request.visibility() != null
+                || request.tags() != null
                 || request.isTop() != null
                 || request.isFeatured() != null;
     }
 
-    private void validatePostPayload(String format, String content, List<String> attachments) {
-        validatePostDraftPayload(format, attachments);
+    private void validatePostPayload(String format, String content, List<String> attachments, String linkUrl) {
+        validatePostDraftPayload(format, attachments, linkUrl);
         if ("rich_text".equals(format)) {
             if (isBlank(content)) {
                 throw new ApiException("正文不能为空");
@@ -1318,9 +1426,12 @@ public class ForumService {
             validateImageAttachments(attachments);
             return;
         }
+        if ("external_link".equals(format)) {
+            validateExternalLinkUrl(linkUrl, true);
+        }
     }
 
-    private void validatePostDraftPayload(String format, List<String> attachments) {
+    private void validatePostDraftPayload(String format, List<String> attachments, String linkUrl) {
         if ("rich_text".equals(format)) {
             if (attachments != null && !attachments.isEmpty()) {
                 throw new ApiException("Markdown 格式不支持图片附件，请选择普通文本格式");
@@ -1329,6 +1440,34 @@ public class ForumService {
         }
         if ("plain_text".equals(format)) {
             validateImageAttachments(attachments);
+            return;
+        }
+        if ("external_link".equals(format)) {
+            if (attachments != null && !attachments.isEmpty()) {
+                throw new ApiException("外链分享不支持图片附件");
+            }
+            validateExternalLinkUrl(linkUrl, false);
+        }
+    }
+
+    private void validateExternalLinkUrl(String linkUrl, boolean required) {
+        String value = normalizeText(linkUrl);
+        if (value == null) {
+            if (required) {
+                throw new ApiException("外链地址不能为空");
+            }
+            return;
+        }
+        try {
+            URI uri = URI.create(value);
+            String scheme = uri.getScheme();
+            if (scheme == null
+                    || (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme))
+                    || isBlank(uri.getHost())) {
+                throw new IllegalArgumentException("invalid link url");
+            }
+        } catch (IllegalArgumentException ex) {
+            throw new ApiException("外链地址格式不合法，请填写 http 或 https 地址");
         }
     }
 
@@ -1357,9 +1496,9 @@ public class ForumService {
                 && ("pending".equals(status) || "published".equals(status));
     }
 
-    private void enforceImageModeration(String title, List<String> attachments, String status) {
+    private ImageModerationDecision enforceImageModeration(String title, List<String> attachments, String status) {
         if (!shouldModeratePostImages(status) || attachments == null || attachments.isEmpty()) {
-            return;
+            return new ImageModerationDecision(false);
         }
         String traceId = "post-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
         log.info("帖子图片审核开始 - TraceId: {}, 标题: {}, 状态: {}, Count: {}",
@@ -1367,6 +1506,7 @@ public class ForumService {
                 title,
                 status,
                 attachments.size());
+        boolean reviewRequired = false;
         for (int i = 0; i < attachments.size(); i++) {
             String attachment = attachments.get(i);
             TencentImageModerationResult result = tencentImageModerationService.moderateImageReference(attachment, traceId);
@@ -1380,25 +1520,38 @@ public class ForumService {
                     result.getLabel(),
                     result.getSubLabel(),
                     result.getScore());
+            if (result.isReview()) {
+                reviewRequired = true;
+                log.warn("帖子图片审核疑似违规，转人工审核 - TraceId: {}, 标题: {}, 图片: {}, Result: {}, Label: {}, SubLabel: {}, Score: {}",
+                        traceId,
+                        title,
+                        attachment,
+                        result.getResult(),
+                        result.getLabel(),
+                        result.getSubLabel(),
+                        result.getScore());
+                continue;
+            }
             tencentImageModerationService.assertAllowed(result, attachment, traceId);
         }
-        log.info("帖子图片审核通过 - TraceId: {}, 标题: {}, Count: {}", traceId, title, attachments.size());
+        if (reviewRequired) {
+            log.info("帖子图片审核需人工复核 - TraceId: {}, 标题: {}, Count: {}", traceId, title, attachments.size());
+        } else {
+            log.info("帖子图片审核通过 - TraceId: {}, 标题: {}, Count: {}", traceId, title, attachments.size());
+        }
+        return new ImageModerationDecision(reviewRequired);
     }
 
     private String resolveCreateStatus(UserEntity currentUser, String requestedStatus) {
         if (requestedStatus != null) {
             validatePostStatus(requestedStatus);
         }
-        // 教师和超级管理员可以直接发布
+        // 教师和超级管理员非草稿发帖直接发布，不进入待审核。
         if ("teacher".equals(currentUser.getRole()) || "super_admin".equals(currentUser.getRole())) {
             if ("draft".equals(requestedStatus)) {
                 return "draft";
             }
-            // 如果没有指定状态，默认为published（直接发布）
-            if (requestedStatus == null) {
-                return "published";
-            }
-            return requestedStatus;
+            return "published";
         }
         // 学生只能创建草稿或待审核帖子
         if ("draft".equals(requestedStatus)) {
@@ -1412,6 +1565,7 @@ public class ForumService {
             String summary,
             String content,
             List<String> tags,
+            String linkUrl,
             String linkTitle,
             String linkSummary
     ) {
@@ -1419,6 +1573,7 @@ public class ForumService {
                 normalizeText(title) == null ? "" : normalizeText(title),
                 normalizeText(summary) == null ? "" : normalizeText(summary),
                 normalizeText(content) == null ? "" : normalizeText(content),
+                normalizeText(linkUrl) == null ? "" : normalizeText(linkUrl),
                 normalizeText(linkTitle) == null ? "" : normalizeText(linkTitle),
                 normalizeText(linkSummary) == null ? "" : normalizeText(linkSummary),
                 tags == null ? "" : String.join(" ", tags)
@@ -1436,15 +1591,300 @@ public class ForumService {
     }
 
     private String buildFullText(String title, String summary, String content,
-                                 List<String> tags, String linkTitle, String linkSummary) {
+                                 List<String> tags, String linkUrl, String linkTitle, String linkSummary) {
         return String.join("\n", List.of(
             normalizeText(title) == null ? "" : normalizeText(title),
             normalizeText(summary) == null ? "" : normalizeText(summary),
             normalizeText(content) == null ? "" : normalizeText(content),
+            normalizeText(linkUrl) == null ? "" : normalizeText(linkUrl),
             normalizeText(linkTitle) == null ? "" : normalizeText(linkTitle),
             normalizeText(linkSummary) == null ? "" : normalizeText(linkSummary),
             tags == null ? "" : String.join(" ", tags)
         ));
+    }
+
+    private TextPostModerationDecision moderateTextPostSubmission(
+            String format,
+            String title,
+            String summary,
+            String content,
+            List<String> tags,
+            String linkUrl,
+            String linkTitle,
+            String linkSummary
+    ) {
+        String auditName = textPostAuditName(format);
+        log.info("开始审核{}帖子 - 标题: {}", auditName, title);
+
+        ModerationCheckResult localResult = preModerationCheck(title, summary, content, tags, linkUrl, linkTitle, linkSummary);
+        log.info("{}本地审核结果 - 标题: {}, 风险等级: {}, 命中词: {}",
+                auditName,
+                title,
+                localResult.riskLevel(),
+                localResult.hitWords());
+
+        if ("high".equals(localResult.riskLevel())) {
+            rejectByLocalBlockedWords(title, localResult);
+        }
+        if ("medium".equals(localResult.riskLevel())) {
+            log.info("{}命中预警词，转人工审核 - 标题: {}, HitWords: {}", auditName, title, localResult.hitWords());
+            return new TextPostModerationDecision(
+                    "pending",
+                    "medium",
+                    false,
+                    textPostAuditKey(format) + " local warning words: " + localResult.hitWords()
+            );
+        }
+
+        if (tencentModerationService == null) {
+            log.warn("腾讯云文本审核未启用，{}转人工审核 - 标题: {}", auditName, title);
+            return new TextPostModerationDecision(
+                    "pending",
+                    "medium",
+                    false,
+                    textPostAuditKey(format) + " pending review: tencent disabled"
+            );
+        }
+
+        TencentModerationResult cloudResult = tencentModerationService.moderateText(
+                buildFullText(title, summary, content, tags, linkUrl, linkTitle, linkSummary)
+        );
+        logTencentModerationSummary(title, cloudResult);
+
+        if (cloudResult == null || !cloudResult.isSuccess() || cloudResult.isFallback()) {
+            log.warn("腾讯云文本审核失败，{}转人工审核 - 标题: {}", auditName, title);
+            return new TextPostModerationDecision(
+                    "pending",
+                    "medium",
+                    false,
+                    textPostAuditKey(format) + " pending review: tencent fallback"
+            );
+        }
+
+        if (cloudResult.isPass()) {
+            log.info("{}腾讯云审核通过，系统自动发布 - 标题: {}, RequestId: {}",
+                    auditName,
+                    title,
+                    cloudResult.getRequestId());
+            return new TextPostModerationDecision(
+                    "published",
+                    "low",
+                    true,
+                    tencentAuditDetail(textPostAuditKey(format) + " system approved: tencent pass", cloudResult)
+            );
+        }
+
+        if (isTencentAdOrTrafficModeration(cloudResult)) {
+            log.info("{}腾讯云判定为广告或引流，转人工审核 - 标题: {}, Label: {}, SubLabel: {}, Score: {}",
+                    auditName,
+                    title,
+                    cloudResult.getLabel(),
+                    cloudResult.getSubLabel(),
+                    cloudResult.getScore());
+            return new TextPostModerationDecision(
+                    "pending",
+                    "medium",
+                    false,
+                    tencentAuditDetail(textPostAuditKey(format) + " pending review: tencent ad/traffic", cloudResult)
+            );
+        }
+
+        rejectByTencentModeration(title, cloudResult);
+        return new TextPostModerationDecision("pending", "medium", false, textPostAuditKey(format) + " rejected");
+    }
+
+    private boolean shouldUseTextPostModeration(String format) {
+        return "rich_text".equals(format) || "external_link".equals(format) || "plain_text".equals(format);
+    }
+
+    private String textPostAuditName(String format) {
+        return switch (format) {
+            case "external_link" -> "外链分享";
+            case "plain_text" -> "普通文本";
+            default -> "Markdown";
+        };
+    }
+
+    private String textPostAuditKey(String format) {
+        return switch (format) {
+            case "external_link" -> "external link";
+            case "plain_text" -> "plain text";
+            default -> "markdown";
+        };
+    }
+
+    private void rejectByLocalBlockedWords(String title, ModerationCheckResult localResult) {
+        log.warn("内容审核命中违禁词 - 标题: {}, 风险等级: {}, HitWords: {}",
+                title,
+                localResult.riskLevel(),
+                localResult.hitWords());
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("message", "内容命中平台违禁规则，请修改后再提交");
+        data.put("riskLevel", localResult.riskLevel());
+        data.put("hitWords", localResult.hitWords());
+        throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, 42201, "内容命中平台违禁规则，请修改后再提交", data);
+    }
+
+    private void rejectByTencentModeration(String title, TencentModerationResult cloudResult) {
+        String reason = getTencentLabelDescription(cloudResult);
+        log.warn("内容审核未通过 - 标题: {}, Label: {}, SubLabel: {}, Score: {}, Keywords: {}",
+                title,
+                cloudResult == null ? null : cloudResult.getLabel(),
+                cloudResult == null ? null : cloudResult.getSubLabel(),
+                cloudResult == null ? null : cloudResult.getScore(),
+                cloudResult == null ? null : cloudResult.getKeywords());
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("message", reason);
+        if (cloudResult != null) {
+            data.put("requestId", cloudResult.getRequestId());
+            data.put("suggestion", cloudResult.getSuggestion());
+            data.put("result", cloudResult.getResult());
+            data.put("label", cloudResult.getLabel());
+            data.put("subLabel", cloudResult.getSubLabel());
+            data.put("score", cloudResult.getScore());
+            data.put("keywords", cloudResult.getKeywords());
+        }
+        throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, 42202, reason, data);
+    }
+
+    private void logTencentModerationSummary(String title, TencentModerationResult cloudResult) {
+        if (cloudResult == null) {
+            log.warn("腾讯云前置审核无反馈 - 标题: {}", title);
+            return;
+        }
+        log.info("腾讯云前置审核反馈 - 标题: {}, 成功: {}, 降级: {}, RequestId: {}, Suggestion: {}, Result: {}, Label: {}, SubLabel: {}, Score: {}, Keywords: {}, Feedback: {}",
+                title,
+                cloudResult.isSuccess(),
+                cloudResult.isFallback(),
+                cloudResult.getRequestId(),
+                cloudResult.getSuggestion(),
+                cloudResult.getResult(),
+                cloudResult.getLabel(),
+                cloudResult.getSubLabel(),
+                cloudResult.getScore(),
+                cloudResult.getKeywords(),
+                cloudResult.getFeedback());
+    }
+
+    private boolean isTencentAdOrTrafficModeration(TencentModerationResult cloudResult) {
+        if (cloudResult == null) {
+            return false;
+        }
+        String label = normalizeText(cloudResult.getLabel());
+        String subLabel = normalizeText(cloudResult.getSubLabel());
+        if (label != null && !"Normal".equalsIgnoreCase(label)) {
+            return matchesAdOrTrafficLabel(label) || matchesAdOrTrafficLabel(subLabel);
+        }
+        if (subLabel != null) {
+            return matchesAdOrTrafficLabel(subLabel);
+        }
+        return hasOnlyAdOrTrafficNonPassDetails(cloudResult.getRawResponse());
+    }
+
+    private boolean hasOnlyAdOrTrafficNonPassDetails(String rawResponse) {
+        String text = normalizeText(rawResponse);
+        if (text == null) {
+            return false;
+        }
+        try {
+            JsonNode response = objectMapper.readTree(text).path("Response");
+            boolean hasNonPassDetail = false;
+            JsonNode details = response.path("DetailResults");
+            if (details.isArray()) {
+                for (JsonNode detail : details) {
+                    String suggestion = jsonText(detail, "Suggestion");
+                    if ("Pass".equalsIgnoreCase(suggestion)) {
+                        continue;
+                    }
+                    hasNonPassDetail = true;
+                    if (!isAdOrTrafficNode(detail)) {
+                        return false;
+                    }
+                }
+            }
+            return hasNonPassDetail;
+        } catch (Exception ex) {
+            log.debug("腾讯云审核原始响应解析失败，跳过广告/引流细分判断", ex);
+        }
+        return false;
+    }
+
+    private boolean isAdOrTrafficNode(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return false;
+        }
+        return matchesAdOrTrafficLabel(jsonText(node, "Label"))
+                || matchesAdOrTrafficLabel(jsonText(node, "SubLabel"));
+    }
+
+    private String jsonText(JsonNode node, String field) {
+        JsonNode value = node.path(field);
+        if (value.isMissingNode() || value.isNull()) {
+            return null;
+        }
+        return normalizeText(value.asText());
+    }
+
+    private boolean matchesAdOrTrafficLabel(String value) {
+        String label = normalizeText(value);
+        if (label == null) {
+            return false;
+        }
+        String lower = label.toLowerCase();
+        return lower.equals("ad")
+                || lower.equals("ads")
+                || lower.contains("advert")
+                || lower.contains("traffic")
+                || lower.contains("contact")
+                || lower.contains("qrcode")
+                || lower.contains("qr_code")
+                || label.contains("广告")
+                || label.contains("推广")
+                || label.contains("引流")
+                || label.contains("联系方式");
+    }
+
+    private String getTencentLabelDescription(TencentModerationResult cloudResult) {
+        if (cloudResult == null) {
+            return "内容审核未通过，请修改后再提交";
+        }
+        String label = normalizeText(cloudResult.getLabel());
+        String subLabel = normalizeText(cloudResult.getSubLabel());
+        if (matchesAdOrTrafficLabel(label) || matchesAdOrTrafficLabel(subLabel)) {
+            return "内容疑似包含广告或引流信息，请修改后再提交";
+        }
+        if ("Porn".equals(label)) {
+            return "内容疑似包含色情低俗信息，请修改后再提交";
+        }
+        if ("Illegal".equals(label)) {
+            return "内容疑似包含违法违规信息，请修改后再提交";
+        }
+        if ("Abuse".equals(label)) {
+            return "内容疑似包含谩骂或人身攻击，请修改后再提交";
+        }
+        if ("Polity".equals(label)) {
+            return "内容疑似包含政治敏感信息，请修改后再提交";
+        }
+        if ("Terror".equals(label)) {
+            return "内容疑似包含暴力恐怖信息，请修改后再提交";
+        }
+        return "内容不符合社区规范，请修改后再提交";
+    }
+
+    private String tencentAuditDetail(String prefix, TencentModerationResult cloudResult) {
+        if (cloudResult == null) {
+            return prefix;
+        }
+        return String.format(
+                "%s: RequestId=%s, Suggestion=%s, Result=%s, Label=%s, SubLabel=%s, Score=%s",
+                prefix,
+                cloudResult.getRequestId(),
+                cloudResult.getSuggestion(),
+                cloudResult.getResult(),
+                cloudResult.getLabel(),
+                cloudResult.getSubLabel(),
+                cloudResult.getScore()
+        );
     }
 
     private String getLabelDescription(String label) {
@@ -1605,8 +2045,22 @@ public class ForumService {
                     "plain_text";
             case "image_gallery", "imagegallery", "image-gallery", "image_album", "image-album", "album", "gallery", "图文相册", "相册" ->
                     "plain_text";
-            case "external_link", "external", "link", "url", "外链", "外部链接" -> "plain_text";
+            case "external_link", "external", "link", "url", "外链", "外部链接" -> "external_link";
             default -> normalized;
+        };
+    }
+
+    private List<String> normalizePostFormatGroup(String rawFormat) {
+        String normalized = normalizePostFormat(rawFormat);
+        if (normalized == null) {
+            return List.of();
+        }
+        validatePostFormat(normalized);
+        return switch (normalized) {
+            case "rich_text" -> List.of("rich_text", "markdown");
+            case "plain_text" -> List.of("plain_text", "image_gallery");
+            case "external_link" -> List.of("external_link");
+            default -> List.of(normalized);
         };
     }
 
@@ -1692,12 +2146,6 @@ public class ForumService {
                 sb.append(compact.charAt(i));
             }
             terms.add(sb.toString());
-        }
-        // 中文短关键词增加单字兜底召回，保证“相同字眼”也能命中（例如 期中 -> 期末）
-        if (containsCjk(compact) && compact.length() <= 3) {
-            for (int i = 0; i < compact.length(); i++) {
-                terms.add(String.valueOf(compact.charAt(i)));
-            }
         }
     }
 
@@ -1838,7 +2286,9 @@ public class ForumService {
     }
 
     private AuditLogView toAuditLogViewLocalized(AuditLogEntity entity) {
-        String operatorName = firstNonBlank(resolveUserDisplayName(entity.getOperatorId()), entity.getOperator());
+        String operatorName = "系统".equals(entity.getOperator())
+                ? entity.getOperator()
+                : firstNonBlank(resolveUserDisplayName(entity.getOperatorId()), entity.getOperator());
         String operatorRoleLabel = toChineseRole(entity.getOperatorRole());
         String localizedDetail = toChineseAuditDetail(entity.getDetail());
         return new AuditLogView(
@@ -1853,6 +2303,17 @@ public class ForumService {
                 localizedDetail,
                 entity.getCreatedAt()
         );
+    }
+
+    private UserEntity systemOperator() {
+        UserEntity admin = userMapper.findByUsername("admin");
+        UserEntity system = new UserEntity();
+        system.setId(admin != null && admin.getId() != null ? admin.getId() : 1L);
+        system.setUsername("system");
+        system.setDisplayName("系统");
+        system.setRole("system");
+        system.setStatus("active");
+        return system;
     }
 
     private String resolveUserDisplayName(Long userId) {
@@ -1871,6 +2332,7 @@ public class ForumService {
             return null;
         }
         return switch (role) {
+            case "system" -> "系统";
             case "super_admin" -> "超级管理员";
             case "admin" -> "管理员";
             case "teacher" -> "教师";
@@ -2086,6 +2548,16 @@ public class ForumService {
         return permissions.contains("review:read") || permissions.contains("post:update");
     }
 
+    private boolean canBypassPostModeration(UserEntity user) {
+        return user != null && ("teacher".equals(user.getRole()) || "super_admin".equals(user.getRole()));
+    }
+
     private record ModerationCheckResult(String riskLevel, List<String> hitWords) {
+    }
+
+    private record TextPostModerationDecision(String status, String riskLevel, boolean systemApproved, String auditDetail) {
+    }
+
+    private record ImageModerationDecision(boolean reviewRequired) {
     }
 }

@@ -11,6 +11,7 @@ const loading = ref(false)
 const errorMessage = ref('')
 const showAdvancedFilter = ref(false)
 const activeFeed = ref('recommend')
+let latestLoadRequestId = 0
 const pagination = reactive({
   page: 1,
   pageSize: 20,
@@ -22,6 +23,7 @@ const filters = reactive({
   author: '',
   tag: '',
   boardId: '',
+  format: '',
   dateFrom: '',
   dateTo: ''
 })
@@ -40,14 +42,21 @@ const formatClassMap = {
   rich_text: 'format-rich-text',
   markdown: 'format-rich-text',
   plain_text: 'format-plain-text',
-  image_gallery: 'format-plain-text'
+  image_gallery: 'format-plain-text',
+  external_link: 'format-external-link'
 }
 const formatLabelMap = {
   rich_text: 'Markdown',
   markdown: 'Markdown',
   plain_text: '普通文本',
-  image_gallery: '普通文本'
+  image_gallery: '普通文本',
+  external_link: '外链分享'
 }
+const formatFilterOptions = [
+  { value: 'rich_text', label: 'Markdown' },
+  { value: 'plain_text', label: '普通文本' },
+  { value: 'external_link', label: '外链分享' }
+]
 const boardThemes = [
   { cardStart: '#ffffff', cardEnd: '#f8fafc', line: '#2563eb', pillBg: '#e8f0ff', pillBorder: '#93c5fd', pillText: '#1e3a8a' },
   { cardStart: '#ffffff', cardEnd: '#f8fafc', line: '#0f766e', pillBg: '#e6fffb', pillBorder: '#5eead4', pillText: '#134e4a' },
@@ -150,6 +159,7 @@ function buildDetailRoute(postId) {
       author: filters.author || undefined,
       tag: filters.tag || undefined,
       boardId: filters.boardId || undefined,
+      format: filters.format || undefined,
       dateFrom: filters.dateFrom || undefined,
       dateTo: filters.dateTo || undefined
     }
@@ -186,144 +196,10 @@ const feedHintText = computed(() => {
   return ''
 })
 
-function buildSearchTerms(rawKeyword) {
-  const keyword = String(rawKeyword || '').trim().toLowerCase()
-  if (!keyword) return []
-
-  const terms = new Set([keyword])
-
-  if (keyword.includes('四六级')) {
-    terms.add('四级')
-    terms.add('六级')
-    terms.add('四六')
-    terms.add('四 六 级')
-  }
-
-  if (keyword.length >= 4) {
-    for (let i = 0; i < keyword.length - 1; i += 1) {
-      terms.add(keyword.slice(i, i + 2))
-    }
-  }
-
-  return Array.from(terms).filter(Boolean)
-}
-
-function relevanceScore(item, terms, keyword) {
-  if (!terms.length) return 0
-
-  const title = String(item.title || '').toLowerCase()
-  const content = String(item.content || '').toLowerCase()
-  const summary = String(item.summary || '').toLowerCase()
-  const authorText = String(item.author || '').toLowerCase()
-  const tagText = Array.isArray(item.tags) ? item.tags.join(' ').toLowerCase() : ''
-
-  let score = 0
-
-  if (title === keyword) score += 120
-  if (title.includes(keyword)) score += 100
-  if (tagText.includes(keyword)) score += 60
-  if (summary.includes(keyword)) score += 45
-  if (content.includes(keyword)) score += 40
-  if (authorText.includes(keyword)) score += 30
-
-  for (const term of terms) {
-    if (!term || term === keyword) continue
-    if (title.includes(term)) score += 16
-    if (tagText.includes(term)) score += 12
-    if (summary.includes(term)) score += 8
-    if (content.includes(term)) score += 6
-    if (authorText.includes(term)) score += 4
-  }
-
-  return score
-}
-
-function hotScore(item) {
-  const likeCount = Number(item.likeCount || 0)
-  const favoriteCount = Number(item.favoriteCount || 0)
-  const commentCount = Number(item.commentCount || 0)
-  return likeCount * 3 + favoriteCount * 2 + commentCount
-}
-
-const filteredRows = computed(() => {
-  const keyword = filters.keyword.trim().toLowerCase()
-  const terms = buildSearchTerms(keyword)
-  const author = filters.author.trim().toLowerCase()
-  const tag = filters.tag.trim().toLowerCase()
-  const fromTs = filters.dateFrom ? new Date(`${filters.dateFrom}T00:00:00`).getTime() : null
-  const toTs = filters.dateTo ? new Date(`${filters.dateTo}T23:59:59`).getTime() : null
-
-  return publishedPosts.value
-    .map((item, index) => {
-      const textPool = [
-        item.title,
-        item.summary,
-        item.content,
-        item.author,
-        Array.isArray(item.tags) ? item.tags.join(' ') : ''
-      ]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase()
-
-      const matchedKeyword = !terms.length || terms.some((term) => textPool.includes(term))
-      const matchedAuthor = !author || String(item.author || '').toLowerCase().includes(author)
-      const matchedTag = !tag || (Array.isArray(item.tags) && item.tags.join(' ').toLowerCase().includes(tag))
-      const matchedBoard = !filters.boardId || Number(item.boardId) === Number(filters.boardId)
-      const createdAtTs = item.createdAt ? new Date(item.createdAt).getTime() : 0
-      const matchedDateFrom = !fromTs || createdAtTs >= fromTs
-      const matchedDateTo = !toTs || createdAtTs <= toTs
-
-      return {
-        item,
-        index,
-        createdAtTs,
-        score: relevanceScore(item, terms, keyword),
-        hot: hotScore(item),
-        matched: matchedKeyword && matchedAuthor && matchedTag && matchedBoard && matchedDateFrom && matchedDateTo,
-        hasKeyword: terms.length > 0
-      }
-    })
-    .filter((row) => row.matched)
-})
-
-const displayPosts = computed(() => {
-  const rows = [...filteredRows.value]
-
-  if (!rows.length) return []
-
-  // 搜索关键词优先时，按相关度排序（覆盖信息流板块排序）。
-  if (rows[0].hasKeyword) {
-    rows.sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score
-      return b.createdAtTs - a.createdAtTs
-    })
-    return rows.map((row) => row.item)
-  }
-
-  if (activeFeed.value === 'hot') {
-    rows.sort((a, b) => {
-      if (b.hot !== a.hot) return b.hot - a.hot
-      return b.createdAtTs - a.createdAtTs
-    })
-  }
-
-  if (activeFeed.value === 'latest') {
-    rows.sort((a, b) => b.createdAtTs - a.createdAtTs)
-  }
-
-  if (activeFeed.value === 'recommend') {
-    rows.sort((a, b) => a.index - b.index)
-  }
-
-  if (activeFeed.value === 'all' || activeFeed.value === 'followed') {
-    rows.sort((a, b) => b.createdAtTs - a.createdAtTs)
-  }
-
-  return rows.map((row) => row.item)
-})
+const displayPosts = computed(() => publishedPosts.value)
 
 async function loadPublishedPosts() {
+  const requestId = ++latestLoadRequestId
   loading.value = true
   errorMessage.value = ''
   try {
@@ -335,9 +211,11 @@ async function loadPublishedPosts() {
       author: filters.author || undefined,
       tag: filters.tag || undefined,
       boardId: filters.boardId || undefined,
+      format: filters.format || undefined,
       dateFrom: filters.dateFrom || undefined,
       dateTo: filters.dateTo || undefined
     })
+    if (requestId !== latestLoadRequestId) return
     const nextList = Array.isArray(data.list) ? data.list : []
     publishedPosts.value = nextList
 
@@ -363,10 +241,13 @@ async function loadPublishedPosts() {
       hasMore.value = nextList.length > 0
     }
   } catch (error) {
+    if (requestId !== latestLoadRequestId) return
     errorMessage.value = error.message
     hasMore.value = false
   } finally {
-    loading.value = false
+    if (requestId === latestLoadRequestId) {
+      loading.value = false
+    }
   }
 }
 
@@ -384,6 +265,7 @@ function resetFilters() {
   filters.author = ''
   filters.tag = ''
   filters.boardId = ''
+  filters.format = ''
   filters.dateFrom = ''
   filters.dateTo = ''
   pagination.page = 1
@@ -405,6 +287,7 @@ function applyRouteState() {
   filters.author = firstQueryValue(route.query.author)
   filters.tag = firstQueryValue(route.query.tag)
   filters.boardId = firstQueryValue(route.query.boardId)
+  filters.format = firstQueryValue(route.query.format)
   filters.dateFrom = firstQueryValue(route.query.dateFrom)
   filters.dateTo = firstQueryValue(route.query.dateTo)
 }
@@ -466,7 +349,7 @@ onMounted(async () => {
     <div class="form-grid two-col" v-if="showAdvancedFilter">
       <label>
         作者
-        <input v-model.trim="filters.author" placeholder="按作者账号检索" />
+        <input v-model.trim="filters.author" placeholder="按作者账号/昵称检索" />
       </label>
       <label>
         话题标签
@@ -477,6 +360,13 @@ onMounted(async () => {
         <select v-model="filters.boardId">
           <option value="">全部板块</option>
           <option v-for="item in boardOptions" :key="item.id" :value="item.id">{{ item.name }}</option>
+        </select>
+      </label>
+      <label>
+        帖子格式
+        <select v-model="filters.format">
+          <option value="">全部格式</option>
+          <option v-for="item in formatFilterOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
         </select>
       </label>
       <label>

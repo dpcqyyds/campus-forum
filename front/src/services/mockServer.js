@@ -491,6 +491,7 @@ export async function mockCreatePost(payload) {
     attachments: Array.isArray(payload.attachments) ? payload.attachments : [],
     galleryCaptions: Array.isArray(payload.galleryCaptions) ? payload.galleryCaptions : [],
     linkUrl: payload.linkUrl || '',
+    linkTitle: payload.linkTitle || '',
     linkSummary: payload.linkSummary || '',
     pollQuestion: payload.pollQuestion || '',
     pollOptions: Array.isArray(payload.pollOptions) ? payload.pollOptions : [],
@@ -544,6 +545,7 @@ export async function mockUpdatePost(postId, payload) {
   post.attachments = payload.attachments !== undefined ? payload.attachments : post.attachments
   post.galleryCaptions = payload.galleryCaptions !== undefined ? payload.galleryCaptions : post.galleryCaptions
   post.linkUrl = payload.linkUrl !== undefined ? payload.linkUrl : post.linkUrl
+  post.linkTitle = payload.linkTitle !== undefined ? payload.linkTitle : post.linkTitle
   post.linkSummary = payload.linkSummary !== undefined ? payload.linkSummary : post.linkSummary
   post.pollQuestion = payload.pollQuestion !== undefined ? payload.pollQuestion : post.pollQuestion
   post.pollOptions = payload.pollOptions !== undefined ? payload.pollOptions : post.pollOptions

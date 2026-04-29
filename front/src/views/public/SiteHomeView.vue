@@ -1,9 +1,5 @@
 <script setup>
-import { computed, ref, onMounted } from 'vue'
-import { useAuthStore } from '../../stores/auth'
-
-const authStore = useAuthStore()
-const entryPath = computed(() => authStore.getDefaultRoute())
+import { ref, onMounted } from 'vue'
 const entered = ref(false)
 onMounted(() => { requestAnimationFrame(() => { entered.value = true }) })
 
@@ -22,9 +18,8 @@ const pills = [
         <span class="brand-name">校园论坛</span>
       </RouterLink>
       <nav class="nav-actions">
-        <RouterLink v-if="!authStore.isLoggedIn" class="link-ghost" to="/login">登录</RouterLink>
-        <RouterLink v-if="!authStore.isLoggedIn" class="link-solid" to="/register">注册</RouterLink>
-        <RouterLink v-else class="link-solid" :to="entryPath">进入系统</RouterLink>
+        <RouterLink class="link-ghost" to="/login">登录</RouterLink>
+        <RouterLink class="link-solid" to="/register">注册</RouterLink>
       </nav>
     </header>
 
@@ -41,9 +36,8 @@ const pills = [
         </h1>
         <p class="subtitle">通知、经验、讨论 — 一个平台搞定</p>
         <div class="hero-cta">
-          <RouterLink v-if="!authStore.isLoggedIn" class="link-solid lg" to="/login">登录系统</RouterLink>
-          <RouterLink v-if="!authStore.isLoggedIn" class="link-ghost lg" to="/register">注册账号</RouterLink>
-          <RouterLink v-else class="link-solid lg" :to="entryPath">进入工作台</RouterLink>
+          <RouterLink class="link-solid lg" to="/login">登录系统</RouterLink>
+          <RouterLink class="link-ghost lg" to="/register">注册账号</RouterLink>
         </div>
       </div>
 

@@ -86,6 +86,7 @@ public record PostView(
         return switch (format) {
             case "rich_text", "markdown" -> "Markdown";
             case "plain_text" -> "普通文本";
+            case "external_link" -> "外链分享";
             default -> format;
         };
     }

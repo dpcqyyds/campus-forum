@@ -30,14 +30,18 @@ const editForm = reactive({
   boardId: '',
   format: 'rich_text',
   status: 'pending',
-  tagsText: ''
+  tagsText: '',
+  linkUrl: '',
+  linkTitle: '',
+  linkSummary: ''
 })
 
 const formatMap = {
   rich_text: 'Markdown',
   markdown: 'Markdown',
   plain_text: '普通文本',
-  image_gallery: '普通文本'
+  image_gallery: '普通文本',
+  external_link: '外链分享'
 }
 
 const statusMap = {
@@ -85,6 +89,7 @@ const canGoPrev = computed(() => pagination.page > 1)
 const canGoNext = computed(() => pagination.page < totalPages.value)
 const pageIndicator = computed(() => `第 ${pagination.page} / ${totalPages.value} 页`)
 const totalHint = computed(() => `共 ${pagination.total} 条帖子`)
+const editingExternalLink = computed(() => editForm.format === 'external_link')
 
 async function loadBoards() {
   try {
@@ -151,6 +156,9 @@ function startEdit(post) {
   editForm.format = post.format
   editForm.status = post.status
   editForm.tagsText = (post.tags || []).join(', ')
+  editForm.linkUrl = post.linkUrl || ''
+  editForm.linkTitle = post.linkTitle || ''
+  editForm.linkSummary = post.linkSummary || ''
 }
 
 function cancelEdit() {
@@ -159,10 +167,14 @@ function cancelEdit() {
 
 async function saveEdit() {
   if (!editingPostId.value) return
+  if (editingExternalLink.value && !isHttpUrl(editForm.linkUrl)) {
+    errorMessage.value = '外链地址格式不正确，请填写 http 或 https 地址。'
+    return
+  }
   saving.value = true
   errorMessage.value = ''
   try {
-    await updatePostApi(editingPostId.value, {
+    const payload = {
       title: editForm.title,
       summary: editForm.summary,
       content: editForm.content,
@@ -170,7 +182,13 @@ async function saveEdit() {
       format: editForm.format,
       status: editForm.status,
       tags: editForm.tagsText
-    })
+    }
+    if (editingExternalLink.value) {
+      payload.linkUrl = editForm.linkUrl
+      payload.linkTitle = editForm.linkTitle
+      payload.linkSummary = editForm.linkSummary
+    }
+    await updatePostApi(editingPostId.value, payload)
     editingPostId.value = null
     await loadData()
   } catch (error) {
@@ -201,6 +219,16 @@ async function togglePublish(post) {
   await loadData()
 }
 
+function isHttpUrl(value) {
+  if (!value || !value.trim()) return false
+  try {
+    const url = new URL(value.trim())
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 onMounted(async () => {
   await loadBoards()
   await loadData()
@@ -221,6 +249,7 @@ onMounted(async () => {
         <option value="">全部格式</option>
         <option value="rich_text">Markdown</option>
         <option value="plain_text">普通文本</option>
+        <option value="external_link">外链分享</option>
       </select>
       <select v-model="filters.status">
         <option value="published,hidden">已发布 + 已下架</option>
@@ -402,6 +431,7 @@ onMounted(async () => {
             <select v-model="editForm.format">
               <option value="rich_text">Markdown</option>
               <option value="plain_text">普通文本</option>
+              <option value="external_link">外链分享</option>
             </select>
           </label>
           <label>
@@ -422,6 +452,20 @@ onMounted(async () => {
             正文
             <textarea v-model="editForm.content" rows="8" />
           </label>
+          <template v-if="editingExternalLink">
+            <label class="full-width">
+              外链地址
+              <input v-model.trim="editForm.linkUrl" placeholder="https://example.com/article" />
+            </label>
+            <label>
+              外链标题
+              <input v-model.trim="editForm.linkTitle" />
+            </label>
+            <label>
+              外链摘要
+              <input v-model.trim="editForm.linkSummary" />
+            </label>
+          </template>
         </div>
 
         <div class="action-row">

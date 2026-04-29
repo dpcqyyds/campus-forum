@@ -174,6 +174,12 @@
                         + (CASE WHEN summary LIKE CONCAT('%', #{term}, '%') THEN 40 ELSE 0 END)
                         + (CASE WHEN content LIKE CONCAT('%', #{term}, '%') THEN 20 ELSE 0 END)
                         + (CASE WHEN author LIKE CONCAT('%', #{term}, '%') THEN 10 ELSE 0 END)
+                        + (CASE WHEN EXISTS (
+                            SELECT 1
+                            FROM users au
+                            WHERE au.username = posts.author
+                              AND au.display_name LIKE CONCAT('%', #{term}, '%')
+                        ) THEN 10 ELSE 0 END)
                         )
                     </foreach>
                     )
@@ -200,12 +206,26 @@
                         OR content LIKE CONCAT('%', #{term}, '%')
                         OR author LIKE CONCAT('%', #{term}, '%')
                         OR tags_json LIKE CONCAT('%', #{term}, '%')
+                        OR EXISTS (
+                            SELECT 1
+                            FROM users au
+                            WHERE au.username = posts.author
+                              AND au.display_name LIKE CONCAT('%', #{term}, '%')
+                        )
                         )
                     </foreach>
                 )
             </if>
             <if test="author != null and author != ''">
-                AND author LIKE CONCAT('%', #{author}, '%')
+                AND (
+                    author LIKE CONCAT('%', #{author}, '%')
+                    OR EXISTS (
+                        SELECT 1
+                        FROM users au
+                        WHERE au.username = posts.author
+                          AND au.display_name LIKE CONCAT('%', #{author}, '%')
+                    )
+                )
             </if>
             <if test="tag != null and tag != ''">
                 AND tags_json LIKE CONCAT('%', #{tag}, '%')
@@ -213,7 +233,13 @@
             <if test="boardId != null">
                 AND board_id = #{boardId}
             </if>
-            <if test="format != null and format != ''">
+            <if test="formats != null and formats.size() > 0">
+                AND format IN
+                <foreach collection="formats" item="item" open="(" close=")" separator=",">
+                    #{item}
+                </foreach>
+            </if>
+            <if test="(formats == null or formats.size() == 0) and format != null and format != ''">
                 AND format = #{format}
             </if>
             <if test="dateFrom != null and dateFrom != ''">
@@ -274,12 +300,26 @@
                         OR content LIKE CONCAT('%', #{term}, '%')
                         OR author LIKE CONCAT('%', #{term}, '%')
                         OR tags_json LIKE CONCAT('%', #{term}, '%')
+                        OR EXISTS (
+                            SELECT 1
+                            FROM users au
+                            WHERE au.username = posts.author
+                              AND au.display_name LIKE CONCAT('%', #{term}, '%')
+                        )
                         )
                     </foreach>
                 )
             </if>
             <if test="author != null and author != ''">
-                AND author LIKE CONCAT('%', #{author}, '%')
+                AND (
+                    author LIKE CONCAT('%', #{author}, '%')
+                    OR EXISTS (
+                        SELECT 1
+                        FROM users au
+                        WHERE au.username = posts.author
+                          AND au.display_name LIKE CONCAT('%', #{author}, '%')
+                    )
+                )
             </if>
             <if test="tag != null and tag != ''">
                 AND tags_json LIKE CONCAT('%', #{tag}, '%')
@@ -287,7 +327,13 @@
             <if test="boardId != null">
                 AND board_id = #{boardId}
             </if>
-            <if test="format != null and format != ''">
+            <if test="formats != null and formats.size() > 0">
+                AND format IN
+                <foreach collection="formats" item="item" open="(" close=")" separator=",">
+                    #{item}
+                </foreach>
+            </if>
+            <if test="(formats == null or formats.size() == 0) and format != null and format != ''">
                 AND format = #{format}
             </if>
             <if test="dateFrom != null and dateFrom != ''">

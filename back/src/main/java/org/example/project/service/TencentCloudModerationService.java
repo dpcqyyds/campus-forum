@@ -195,6 +195,7 @@ public class TencentCloudModerationService {
         // 解析审核结果
         String suggestionStr = response.has("Suggestion") ? response.get("Suggestion").asText() : "Pass";
         String label = response.has("Label") ? response.get("Label").asText() : "Normal";
+        String subLabel = response.has("SubLabel") ? response.get("SubLabel").asText() : null;
         String detailResults = response.has("DetailResults") ? response.get("DetailResults").toString() : "[]";
 
         // 将字符串Suggestion转换为数字
@@ -235,10 +236,11 @@ public class TencentCloudModerationService {
         TencentModerationResult result = TencentModerationResult.success(suggestion, label, score);
         result.setSuggestion(suggestionStr);
         result.setRequestId(requestId);
+        result.setSubLabel(subLabel);
         result.setKeywords(new ArrayList<>(keywords));
         result.setFeedback(String.format(
-            "RequestId=%s, Suggestion=%s, Result=%s, Label=%s, Score=%s, Keywords=%s, DetailResults=%s",
-            requestId, suggestionStr, suggestion, label, score, result.getKeywords(), detailResults
+            "RequestId=%s, Suggestion=%s, Result=%s, Label=%s, SubLabel=%s, Score=%s, Keywords=%s, DetailResults=%s",
+            requestId, suggestionStr, suggestion, label, subLabel, score, result.getKeywords(), detailResults
         ));
         result.setRawResponse(responseBody);
 
@@ -287,4 +289,3 @@ public class TencentCloudModerationService {
         return sb.toString();
     }
 }
-

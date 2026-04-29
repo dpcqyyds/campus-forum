@@ -23,7 +23,8 @@ const canPublishDirectly = computed(() => {
 
 const formatOptions = [
   { value: 'rich_text', label: 'Markdown' },
-  { value: 'plain_text', label: '普通文本（可上传图片）' }
+  { value: 'plain_text', label: '普通文本（可上传图片）' },
+  { value: 'external_link', label: '外链分享' }
 ]
 
 const showMarkdownPreview = ref(false)
@@ -32,8 +33,11 @@ const form = reactive({
   title: '',
   summary: '',
   boardId: '',
-  format: 'rich_text',
+  format: 'plain_text',
   content: '',
+  linkUrl: '',
+  linkTitle: '',
+  linkSummary: '',
   tagsText: '',
   isTop: false,
   isFeatured: false
@@ -49,6 +53,7 @@ const markdownPreviewHtml = computed(() => {
 const contentPlaceholder = computed(() => {
   if (form.format === 'rich_text') return '请输入 Markdown 内容，支持图片链接语法：[![图片](图片地址)](跳转地址)'
   if (form.format === 'plain_text') return '请输入普通文本内容，可同时上传图片'
+  if (form.format === 'external_link') return '可选，补充说明外链内容'
   return '请输入正文内容'
 })
 
@@ -67,8 +72,11 @@ function resetForm() {
   form.title = ''
   form.summary = ''
   form.boardId = boards.value[0]?.id || ''
-  form.format = 'rich_text'
+  form.format = 'plain_text'
   form.content = ''
+  form.linkUrl = ''
+  form.linkTitle = ''
+  form.linkSummary = ''
   form.tagsText = ''
   form.isTop = false
   form.isFeatured = false
@@ -169,7 +177,25 @@ function buildPayload(overrideStatus) {
     payload.galleryCaptions = localImages.value.map((item) => item.caption)
   }
 
+  if (form.format === 'external_link') {
+    payload.content = form.content
+    payload.attachments = []
+    payload.linkUrl = form.linkUrl
+    payload.linkTitle = form.linkTitle
+    payload.linkSummary = form.linkSummary
+  }
+
   return payload
+}
+
+function isHttpUrl(value) {
+  if (!value || !value.trim()) return false
+  try {
+    const url = new URL(value.trim())
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
 }
 
 function validateForm(mode = 'publish') {
@@ -178,6 +204,9 @@ function validateForm(mode = 'publish') {
   }
 
   if (mode === 'draft') {
+    if (form.format === 'external_link' && form.linkUrl.trim() && !isHttpUrl(form.linkUrl)) {
+      return '外链地址格式不正确，请填写 http 或 https 地址。'
+    }
     return ''
   }
 
@@ -189,7 +218,31 @@ function validateForm(mode = 'publish') {
     return '请填写普通文本正文，或至少上传一张图片。'
   }
 
+  if (form.format === 'external_link' && !isHttpUrl(form.linkUrl)) {
+    return '请填写正确的外链地址，必须以 http 或 https 开头。'
+  }
+
   return ''
+}
+
+function openPreAuditDialog(error) {
+  preAuditResult.value = {
+    title: '前置审核提示',
+    summary: '前置审核未通过，请根据提示修改后再提交。',
+    message: error?.data?.message || error.message || '内容命中前置审核规则，请修改后重试。'
+  }
+}
+
+function closePreAuditDialog() {
+  preAuditResult.value = null
+}
+
+function postSubmitSuccessMessage(result) {
+  const status = result?.post?.status
+  if (status === 'published') return '帖子已发布。'
+  if (status === 'pending') return '帖子已提交管理员审核，请等待审核。'
+  if (status === 'draft') return '已存为草稿，可在“我的帖子”中继续编辑或重新发布。'
+  return canPublishDirectly.value ? '帖子已发布。' : '帖子已提交管理员审核，请等待审核。'
 }
 
 async function submitPost() {
@@ -221,18 +274,12 @@ async function submitPost() {
       payload.attachments = uploadedUrls
     }
 
-    await createPostApi(payload)
-    successMessage.value = canPublishDirectly.value ? '帖子发布成功。' : '帖子已提交审核，请等待管理员审核。'
+    const result = await createPostApi(payload)
+    successMessage.value = postSubmitSuccessMessage(result)
     resetForm()
   } catch (error) {
     if (error?.status === 422 || error?.code === 42201) {
-      const hitWords = Array.isArray(error?.data?.hitWords) ? error.data.hitWords : []
-      preAuditResult.value = {
-        message: error?.data?.message || error.message || '内容命中前置审核规则，请修改后重试。',
-        riskLevel: error?.data?.riskLevel || 'high',
-        hitWords
-      }
-      errorMessage.value = '前置审核未通过，请根据提示修改后再提交。'
+      openPreAuditDialog(error)
       return
     }
     errorMessage.value = error.message
@@ -361,7 +408,13 @@ onBeforeUnmount(clearLocalImages)
       <div v-if="localImages.length" class="gallery-preview-section">
         <div class="section-header">
           <h4>已选图片 ({{ localImages.length }})</h4>
-          <span class="hint-text">可拖动调整顺序，为每张图片添加说明</span>
+          <div class="section-actions">
+            <span class="hint-text">可拖动调整顺序，为每张图片添加说明</span>
+            <label class="add-more-images">
+              继续添加
+              <input type="file" accept="image/*" multiple @change="onLocalImageChange" class="file-input-hidden" />
+            </label>
+          </div>
         </div>
         <div class="gallery-grid">
           <div class="gallery-item" v-for="(img, index) in localImages" :key="img.previewUrl">
@@ -390,15 +443,30 @@ onBeforeUnmount(clearLocalImages)
       </div>
     </div>
 
-    <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
-    <div v-if="preAuditResult" class="panel sub-panel">
-      <h3>前置审核提示</h3>
-      <p class="error">{{ preAuditResult.message }}</p>
-      <p class="hint">风险等级：{{ preAuditResult.riskLevel }}</p>
-      <p class="hint" v-if="preAuditResult.hitWords.length">
-        命中词：{{ preAuditResult.hitWords.join('，') }}
-      </p>
+    <div class="format-card" v-if="form.format === 'external_link'">
+      <h3>外链分享</h3>
+      <p class="hint">用于分享校内通知、学习资料、活动报名等外部页面</p>
+      <div class="form-grid two-col">
+        <label class="full-width">
+          外链地址
+          <input v-model.trim="form.linkUrl" placeholder="https://example.com/article" />
+        </label>
+        <label>
+          外链标题
+          <input v-model.trim="form.linkTitle" placeholder="可选，默认使用帖子标题" />
+        </label>
+        <label>
+          外链摘要
+          <input v-model.trim="form.linkSummary" placeholder="可选，用于详情页展示" />
+        </label>
+        <label class="full-width">
+          补充说明
+          <textarea v-model="form.content" rows="5" :placeholder="contentPlaceholder" />
+        </label>
+      </div>
     </div>
+
+    <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
     <p v-if="successMessage" class="success">{{ successMessage }}</p>
 
     <div class="action-row">
@@ -409,6 +477,20 @@ onBeforeUnmount(clearLocalImages)
         {{ savingDraft ? '保存中...' : '存为草稿' }}
       </button>
       <button type="button" @click="resetForm">重置</button>
+    </div>
+
+    <div v-if="preAuditResult" class="audit-dialog-mask" role="dialog" aria-modal="true" @click.self="closePreAuditDialog">
+      <div class="audit-dialog-panel">
+        <div class="audit-dialog-header">
+          <h3>{{ preAuditResult.title }}</h3>
+          <button type="button" class="audit-dialog-close" aria-label="关闭" @click="closePreAuditDialog">×</button>
+        </div>
+        <p class="audit-dialog-summary">{{ preAuditResult.summary }}</p>
+        <p class="audit-dialog-message">{{ preAuditResult.message }}</p>
+        <div class="audit-dialog-actions">
+          <button type="button" class="primary-btn" @click="closePreAuditDialog">知道了</button>
+        </div>
+      </div>
     </div>
   </section>
 </template>
@@ -553,6 +635,7 @@ onBeforeUnmount(clearLocalImages)
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 16px;
   margin-bottom: 16px;
   padding-bottom: 12px;
   border-bottom: 2px solid #e0e0e0;
@@ -567,6 +650,35 @@ onBeforeUnmount(clearLocalImages)
 .hint-text {
   font-size: 13px;
   color: #666;
+}
+
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.add-more-images {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid #4a90e2;
+  border-radius: 6px;
+  background: #f8fbff;
+  color: #2563eb;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.add-more-images:hover {
+  border-color: #357abd;
+  background: #edf6ff;
 }
 
 .gallery-grid {
@@ -676,6 +788,91 @@ onBeforeUnmount(clearLocalImages)
 .empty-gallery p {
   margin: 0;
   font-size: 15px;
+}
+
+@media (max-width: 640px) {
+  .section-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .section-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+.audit-dialog-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.audit-dialog-panel {
+  width: min(420px, 100%);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.24);
+  overflow: hidden;
+}
+
+.audit-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.audit-dialog-header h3 {
+  margin: 0;
+  font-size: 18px;
+  color: #111827;
+}
+
+.audit-dialog-close {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #64748b;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.audit-dialog-close:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.audit-dialog-summary {
+  margin: 0;
+  padding: 20px 20px 0;
+  color: #334155;
+  line-height: 1.6;
+}
+
+.audit-dialog-message {
+  margin: 12px 20px 0;
+  padding: 12px 14px;
+  border-radius: 6px;
+  background: #fef2f2;
+  color: #b91c1c;
+  line-height: 1.6;
+}
+
+.audit-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 20px;
 }
 
 @media (max-width: 768px) {

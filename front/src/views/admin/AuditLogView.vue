@@ -1,11 +1,12 @@
 ﻿<script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { listAuditLogsApi } from '../../services/modules/forumApi'
 
 const loading = ref(false)
 const errorMessage = ref('')
 const logs = ref([])
 const total = ref(0)
+const pageSizeOptions = [10, 20, 50, 100]
 
 const filters = reactive({
   keyword: '',
@@ -15,6 +16,10 @@ const filters = reactive({
   page: 1,
   pageSize: 20
 })
+
+const totalPages = computed(() => Math.max(1, Math.ceil(Number(total.value || 0) / filters.pageSize)))
+const canGoPrev = computed(() => filters.page > 1)
+const canGoNext = computed(() => filters.page < totalPages.value)
 
 const actionOptions = [
   { value: '', label: '全部操作' },
@@ -27,8 +32,9 @@ const actionOptions = [
 
 const roleOptions = [
   { value: '', label: '全部角色' },
+  { value: 'system', label: '系统' },
+  { value: 'student', label: '学生' },
   { value: 'teacher', label: '教师' },
-  { value: 'admin', label: '管理员' },
   { value: 'super_admin', label: '超级管理员' }
 ]
 
@@ -50,6 +56,8 @@ async function loadData() {
     const data = await listAuditLogsApi(filters)
     logs.value = data.list || []
     total.value = data.total || 0
+    filters.page = Number(data.page || filters.page)
+    filters.pageSize = Number(data.pageSize || filters.pageSize)
   } catch (error) {
     logs.value = []
     total.value = 0
@@ -61,6 +69,23 @@ async function loadData() {
 
 function query() {
   filters.page = 1
+  loadData()
+}
+
+function changePageSize() {
+  filters.page = 1
+  loadData()
+}
+
+function goPrevPage() {
+  if (!canGoPrev.value) return
+  filters.page -= 1
+  loadData()
+}
+
+function goNextPage() {
+  if (!canGoNext.value) return
+  filters.page += 1
   loadData()
 }
 
@@ -82,9 +107,16 @@ onMounted(loadData)
       </select>
       <input v-model.trim="filters.operator" placeholder="按操作人账号搜索" @keyup.enter="query" />
       <button type="button" @click="query">查询</button>
+      <label>
+        每页
+        <select v-model.number="filters.pageSize" @change="changePageSize">
+          <option v-for="size in pageSizeOptions" :key="size" :value="size">{{ size }}</option>
+        </select>
+        条
+      </label>
     </div>
 
-    <p class="hint">共 {{ total }} 条日志</p>
+    <p class="hint">共 {{ total }} 条日志，第 {{ filters.page }} / {{ totalPages }} 页</p>
     <p v-if="loading" class="hint">日志加载中...</p>
     <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
 
@@ -124,5 +156,11 @@ onMounted(loadData)
         </tr>
       </tbody>
     </table>
+
+    <div class="action-row" v-if="total > 0">
+      <button type="button" :disabled="!canGoPrev || loading" @click="goPrevPage">上一页</button>
+      <span class="page-indicator">第 {{ filters.page }} / {{ totalPages }} 页</span>
+      <button type="button" :disabled="!canGoNext || loading" @click="goNextPage">下一页</button>
+    </div>
   </section>
 </template>

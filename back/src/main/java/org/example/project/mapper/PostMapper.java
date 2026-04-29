@@ -44,6 +44,7 @@ public interface PostMapper {
             @Param("tag") String tag,
             @Param("boardId") Long boardId,
             @Param("format") String format,
+            @Param("formats") List<String> formats,
             @Param("dateFrom") String dateFrom,
             @Param("dateTo") String dateTo,
             @Param("offset") int offset,
@@ -72,6 +73,7 @@ public interface PostMapper {
             @Param("tag") String tag,
             @Param("boardId") Long boardId,
             @Param("format") String format,
+            @Param("formats") List<String> formats,
             @Param("dateFrom") String dateFrom,
             @Param("dateTo") String dateTo
     );

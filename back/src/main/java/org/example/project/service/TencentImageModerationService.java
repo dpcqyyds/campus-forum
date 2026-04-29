@@ -176,7 +176,7 @@ public class TencentImageModerationService {
     }
 
     public void assertAllowed(TencentImageModerationResult result, String imageReference, String traceId) {
-        if (result == null || result.isPass() || result.isSkipped()) {
+        if (result == null || result.isPass() || result.isSkipped() || result.isReview()) {
             return;
         }
         Map<String, Object> data = new LinkedHashMap<>();
@@ -186,16 +186,7 @@ public class TencentImageModerationService {
         data.put("subLabel", result.getSubLabel());
         data.put("score", result.getScore());
         data.put("text", result.getText());
-        if (result.isReview()) {
-            log.warn("图片审核疑似违规 - TraceId: {}, Image: {}, Result: {}, Label: {}, SubLabel: {}, Score: {}",
-                    displayTraceId(traceId),
-                    imageReference,
-                    result.getResult(),
-                    result.getLabel(),
-                    result.getSubLabel(),
-                    result.getScore());
-            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, 42203, "图片疑似违规，请更换图片或联系管理员", data);
-        }
+        String message = imageModerationMessage(result);
         log.warn("图片审核未通过 - TraceId: {}, Image: {}, Result: {}, Label: {}, SubLabel: {}, Score: {}",
                 displayTraceId(traceId),
                 imageReference,
@@ -203,7 +194,49 @@ public class TencentImageModerationService {
                 result.getLabel(),
                 result.getSubLabel(),
                 result.getScore());
-        throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, 42203, "图片审核未通过，请更换图片", data);
+        throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, 42203, message, data);
+    }
+
+    private String imageModerationMessage(TencentImageModerationResult result) {
+        String label = result == null ? null : firstNonBlank(result.getSubLabel(), result.getLabel());
+        if (!StringUtils.hasText(label)) {
+            return "图片审核未通过，请更换图片";
+        }
+        String lower = label.toLowerCase(Locale.ROOT);
+        if (lower.contains("porn")
+                || lower.contains("sexy")
+                || lower.contains("sexual")
+                || lower.contains("exposed")
+                || label.contains("色情")
+                || label.contains("低俗")) {
+            return "图片疑似包含色情低俗内容，请更换图片";
+        }
+        if (lower.contains("terror")
+                || lower.contains("violence")
+                || lower.contains("bloody")
+                || label.contains("暴恐")
+                || label.contains("暴力")) {
+            return "图片疑似包含暴力恐怖内容，请更换图片";
+        }
+        if (lower.contains("polit")
+                || label.contains("政治")
+                || label.contains("敏感")) {
+            return "图片疑似包含政治敏感内容，请更换图片";
+        }
+        if (lower.contains("ad")
+                || lower.contains("qr")
+                || lower.contains("contact")
+                || label.contains("广告")
+                || label.contains("推广")
+                || label.contains("引流")) {
+            return "图片疑似包含广告或引流信息，请更换图片";
+        }
+        if (lower.contains("illegal")
+                || label.contains("违法")
+                || label.contains("违规")) {
+            return "图片疑似包含违法违规内容，请更换图片";
+        }
+        return "图片审核未通过，请更换图片";
     }
 
     private Map<String, String> auditParams() {

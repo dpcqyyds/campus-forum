@@ -7,6 +7,7 @@ public class TencentModerationResult {
     private boolean pass;           // 是否通过审核
     private String riskLevel;       // 风险等级: low/medium/high
     private String label;           // 违规标签: Normal/Porn/Ads/Illegal等
+    private String subLabel;        // 违规子标签，如 Contact
     private Integer score;          // 风险分数
     private Integer result;         // 审核结果: 0正常/1违规/2疑似
     private List<String> keywords;  // 命中的关键词
@@ -49,6 +50,14 @@ public class TencentModerationResult {
 
     public void setLabel(String label) {
         this.label = label;
+    }
+
+    public String getSubLabel() {
+        return subLabel;
+    }
+
+    public void setSubLabel(String subLabel) {
+        this.subLabel = subLabel;
     }
 
     public Integer getScore() {

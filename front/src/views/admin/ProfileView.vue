@@ -47,10 +47,16 @@ const avatarFile = ref(null)
 const avatarPreviewUrl = ref('')
 
 const postList = ref([])
+const postTotal = ref(0)
 const commentList = ref([])
 const likeList = ref([])
 const favoriteList = ref([])
 const followingList = ref([])
+const pageSizeOptions = [10, 20, 50, 100]
+const postPagination = reactive({
+  page: 1,
+  pageSize: 20
+})
 
 const tabs = [
   { key: 'posts', label: '我的帖子' },
@@ -59,6 +65,10 @@ const tabs = [
   { key: 'favorites', label: '我的收藏' },
   { key: 'following', label: '我的关注' }
 ]
+
+const postTotalPages = computed(() => Math.max(1, Math.ceil(Number(postTotal.value || 0) / postPagination.pageSize)))
+const canGoPrevPostPage = computed(() => postPagination.page > 1)
+const canGoNextPostPage = computed(() => postPagination.page < postTotalPages.value)
 
 const roleLabel = computed(() => {
   const map = {
@@ -124,8 +134,12 @@ async function loadTabData() {
   errorMessage.value = ''
   try {
     if (activeTab.value === 'posts') {
-      const data = await listMyProfilePostsApi({ page: 1, pageSize: 20 })
+      const data = await listMyProfilePostsApi({
+        page: postPagination.page,
+        pageSize: postPagination.pageSize
+      })
       postList.value = normalizeList(data)
+      postTotal.value = Number(data.total ?? postList.value.length)
     }
 
     if (activeTab.value === 'comments') {
@@ -152,6 +166,23 @@ async function loadTabData() {
   } finally {
     tabLoading.value = false
   }
+}
+
+function changePostPageSize() {
+  postPagination.page = 1
+  loadTabData()
+}
+
+function goPrevPostPage() {
+  if (!canGoPrevPostPage.value) return
+  postPagination.page -= 1
+  loadTabData()
+}
+
+function goNextPostPage() {
+  if (!canGoNextPostPage.value) return
+  postPagination.page += 1
+  loadTabData()
 }
 
 async function saveProfile() {
@@ -331,6 +362,20 @@ onBeforeUnmount(() => {
           <tr v-if="!postList.length && !tabLoading"><td colspan="6" class="hint">暂无帖子</td></tr>
         </tbody>
       </table>
+
+      <div class="action-row" v-if="activeTab === 'posts' && postTotal > 0">
+        <span class="hint">已发布帖子共 {{ postTotal }} 条</span>
+        <label>
+          每页
+          <select v-model.number="postPagination.pageSize" :disabled="tabLoading" @change="changePostPageSize">
+            <option v-for="size in pageSizeOptions" :key="size" :value="size">{{ size }}</option>
+          </select>
+          条
+        </label>
+        <button type="button" :disabled="!canGoPrevPostPage || tabLoading" @click="goPrevPostPage">上一页</button>
+        <span class="page-indicator">第 {{ postPagination.page }} / {{ postTotalPages }} 页</span>
+        <button type="button" :disabled="!canGoNextPostPage || tabLoading" @click="goNextPostPage">下一页</button>
+      </div>
 
       <table v-if="activeTab === 'comments'">
         <thead>

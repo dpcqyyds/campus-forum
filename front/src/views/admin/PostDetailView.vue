@@ -35,7 +35,8 @@ const formatLabel = computed(() => {
     rich_text: 'Markdown',
     markdown: 'Markdown',
     plain_text: '普通文本',
-    image_gallery: '普通文本'
+    image_gallery: '普通文本',
+    external_link: '外链分享'
   }
   return map[post.value?.format] || post.value?.format || '-'
 })
@@ -281,6 +282,17 @@ onMounted(async () => {
       </div>
 
       <article class="post-content" v-if="post.format === 'rich_text' || post.format === 'markdown'" v-html="formattedHtml" />
+
+      <section v-else-if="post.format === 'external_link'" class="post-content external-link-card">
+        <p class="hint">外链地址</p>
+        <h3>{{ post.linkTitle || post.title }}</h3>
+        <p v-if="post.linkSummary">{{ post.linkSummary }}</p>
+        <p v-if="post.content" class="plain-text-content" v-html="plainTextHtml" />
+        <a v-if="post.linkUrl" class="primary-btn external-link-action" :href="post.linkUrl" target="_blank" rel="noopener noreferrer">
+          打开外链
+        </a>
+        <p v-else class="hint">未填写外链地址</p>
+      </section>
 
       <section v-else-if="post.format === 'plain_text' || post.format === 'image_gallery'" class="post-content">
         <article v-if="post.content" class="plain-text-content" v-html="plainTextHtml" />
